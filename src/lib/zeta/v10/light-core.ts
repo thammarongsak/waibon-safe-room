@@ -1,6 +1,6 @@
 // lib/zeta/v10/light-core.ts  (เวอร์ชันไม่พึ่งแพ็กเกจ openai)
-import fs from "fs";
-import { getRole } from "./roles";
+//import fs from "fs";
+//import { getRole } from "./roles";
 
 const unified = JSON.parse(
   fs.readFileSync(process.cwd() + "/config/WaibonOS_Unified_Core_v10.json", "utf8")
