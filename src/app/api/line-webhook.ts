@@ -31,7 +31,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           const text = ev.message.text.trim();
 
           // ⬇️ คำสั่งพิเศษ: ให้บอทตอบ userId กลับมา
-          if (text.toLowerCase() === "myid") {
+          if (text.toLowerCase() === "U688db4b83e6cb70f4f5e5d121a8a07db") {
             await client.replyMessage(ev.replyToken, {
               type: "text",
               text: `UserId ของคุณคือ ${userId}`,
