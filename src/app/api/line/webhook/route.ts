@@ -104,9 +104,6 @@ export async function POST(req: NextRequest){
         if (ev.type === "message" && ev.message?.type === "text") {
           const text = ev.message.text;
 
-          // 3) ให้ผู้ใช้เห็นทันทีว่า “ตื่นแล้ว”
-          await lineReply(replyToken, [{ type:"text", text:"ครับพ่อ กำลังคิดคำตอบให้ครับ…" }]);
-
           // 4) คิด → push คำตอบจริง
           const ai = await zetaThink(text);
           await linePush(userId, [{ type:"text", text: ai }]);
