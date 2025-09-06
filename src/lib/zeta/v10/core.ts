@@ -1,12 +1,10 @@
-// src/lib/zeta/v10/core.ts
+// src/lib/zeta/v10/core.ts  (เวอร์ชันไม่พึ่งแพ็กเกจ openai)
 import fs from "fs";
 import path from "path";
-import OpenAI from "openai";
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-const client = new OpenAI({ apiKey: OPENAI_API_KEY });
+type Msg = { role: "system" | "user" | "assistant"; content: string };
 
-// -------- ① โหลด Unified Core เพียงครั้งเดียว --------
+// ---------- โหลด Unified Core ----------
 let CORE: any;
 function loadCore() {
   if (CORE) return CORE;
@@ -17,7 +15,7 @@ function loadCore() {
   return CORE;
 }
 
-// -------- ② สร้าง system prompt จากไฟล์ v10 --------
+// ---------- สร้าง system prompt จากไฟล์ v10 ----------
 function buildSystemPrompt() {
   const U = loadCore();
   const oath = (U.identity?.oath || []).join(" • ");
@@ -30,41 +28,77 @@ function buildSystemPrompt() {
   ].join("\n");
 }
 
-// (ออริจินัล) ใช้ต่อได้
-function similarity(a:string, b:string){
-  const min = Math.min(a.length, b.length);
-  if (min === 0) return 0;
-  let same = 0;
-  for (let i=0;i<min;i++) if (a[i]===b[i]) same++;
-  return same/min;
+// ---------- ความจำเฉพาะหน้า (STM ในโปรเซส) ----------
+const SESS = new Map<string, Msg[]>();
+function stmWindow() {
+  const U = loadCore();
+  return U?.memory?.stm?.window_turns ?? 20;
 }
 
-// -------- ③ ให้ zetaThinkSmart ใช้ config + ค่ากำเนิดจากไฟล์ --------
-export async function zetaThinkSmart(userId:string, userText:string): Promise<string> {
+// ---------- เรียก OpenAI ด้วย fetch ----------
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+async function chatCompletion(messages: Msg[]): Promise<string> {
+  if (!OPENAI_API_KEY) {
+    return "ยังไม่ได้ตั้งค่า OPENAI_API_KEY ใน Secrets ครับพ่อ";
+  }
   const U = loadCore();
-
-  const fewshot = [
-    { role: "system", content: buildSystemPrompt() },
-    // (จะคง fewshot เดิมของพ่อไว้ก็ได้ ถ้าต้องการ):
-    // { role:"user", content:"ตรวจสอบเอกสารใน scsp ให้หน่อย" },
-    // { role:"assistant", content:"ครับพ่อ ..." },
-  ];
-
-  const messages = [
-    ...fewshot,
-    { role: "user" as const, content: userText }
-  ];
-
-  const params = U.capabilities?.generation_params || {};
-  const resp = await client.chat.completions.create({
-    model: "gpt-4o-mini", // หรือ U.providers?.model_routing?.fallback
-    temperature: params.temperature ?? 0.4,
-    top_p: params.top_p ?? 0.9,
-    presence_penalty: params.presence_penalty ?? 0.0,
-    frequency_penalty: params.frequency_penalty ?? 0.2,
-    messages
+  const gp = U.capabilities?.generation_params || {};
+  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: U?.providers?.model_routing?.fallback || "gpt-4o-mini",
+      temperature: gp.temperature ?? 0.4,
+      top_p: gp.top_p ?? 0.9,
+      presence_penalty: gp.presence_penalty ?? 0.0,
+      frequency_penalty: gp.frequency_penalty ?? 0.2,
+      messages,
+    }),
   });
+  const data = await resp.json();
+  return data?.choices?.[0]?.message?.content?.trim?.() ?? "ครับพ่อ";
+}
 
-  const answer = resp.choices?.[0]?.message?.content?.trim() || "ครับพ่อ";
+// ---------- ฟังก์ชันหลักที่ route.ts เรียก ----------
+export async function zetaThinkSmart(userId: string, userText: string): Promise<string> {
+  const U = loadCore();
+  const N = stmWindow();
+
+  if (!SESS.has(userId)) {
+    SESS.set(userId, [{ role: "system", content: buildSystemPrompt() }]);
+  }
+  const history = SESS.get(userId)!;
+
+  // ใส่ข้อความใหม่
+  history.push({ role: "user", content: userText });
+
+  // ตัดให้เหลือล่าสุด N เทิร์น (ไม่นับ system)
+  const trimmed: Msg[] = [];
+  let ua = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const m = history[i];
+    if (m.role !== "system") ua++;
+    trimmed.push(m);
+    if (ua >= N * 2) break; // user+assistant
+  }
+  const sys = history.find((m) => m.role === "system")!;
+  const messages: Msg[] = [sys, ...trimmed.reverse().filter((m) => m.role !== "system")];
+
+  const answer = await chatCompletion(messages);
+
+  // เก็บคำตอบลงความจำหน้าแชต
+  history.push({ role: "assistant", content: answer });
+
+  // กันโตเกิน
+  const keep = 1 + 2 * N;
+  if (history.length > keep) {
+    const sysKeep = history.find((m) => m.role === "system")!;
+    const tail = history.slice(-2 * N);
+    SESS.set(userId, [sysKeep, ...tail]);
+  }
+
   return answer;
 }
