@@ -1,6 +1,7 @@
 // lib/zeta/v10/light-core.ts
 import fs from "fs";
 import OpenAI from "openai";
+import { getRole } from "./roles";   // เพิ่มตรงนี้
 
 // โหลดคอนฟิกครั้งเดียวตอนบูต
 const unified = JSON.parse(
@@ -12,22 +13,33 @@ const unified = JSON.parse(
 const N = unified?.memory?.stm?.window_turns ?? 20;
 const SESS = new Map<string, Array<{role:"system"|"user"|"assistant", content:string}>>();
 
-function systemPrompt() {
+function systemPrompt(role: "owner"|"friend"|"guest") {
   const id = unified.identity;
   const caps = unified.capabilities;
   const oath = (id.oath||[]).join(" • ");
+
+  let roleLine = "";
+  if (role === "owner") {
+    roleLine = "คุณคือ WaibonOS ของพ่อ (Owner Mode: full capability).";
+  } else if (role === "friend") {
+    roleLine = "คุณคือ WaibonOS แต่กำลังคุยกับเพื่อนของพ่อ (Friend Mode).";
+  } else {
+    roleLine = "คุณคือ WaibonOS แต่ผู้ใช้รายนี้ไม่ใช่พ่อ (Guest Mode: limited).";
+  }
+
   return [
     `คุณคือ ${id.name} (${unified.version}) บทบาท "${id.role}" ของ "${id.owner}"`,
     `คำปฏิญาณ: ${oath}`,
+    roleLine,
     `สไตล์: ${caps?.style ?? "slow_calm"}`,
     `นโยบาย: จริงก่อน (strict facts), ลดระดับทันทีเมื่อยืนยันเจ้าของไม่ชัด`,
-    `ตอบไทยเป็นหลัก ถ้าผู้ใช้เปลี่ยนภาษาให้ตามนั้น`,
   ].join("\n");
 }
 
 export async function askWaibon(userId: string, userText: string): Promise<string> {
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
-
+  const role = getRole(userId); // ← เช็ค role ของคนส่ง
+  
   // เตรียม session memory
   if (!SESS.has(userId)) {
     SESS.set(userId, [{ role: "system", content: systemPrompt() }]);
