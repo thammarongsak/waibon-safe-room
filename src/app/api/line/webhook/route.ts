@@ -7,18 +7,21 @@ export const runtime = "nodejs"; // กัน Next ใช้ Edge โดยไ�
 
 const SECRET = process.env.LINE_CHANNEL_SECRET!;
 const TOKEN  = process.env.LINE_CHANNEL_ACCESS_TOKEN!;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ""; // ไม่มีคีย์ก็ทำงานส่วน ack/push ได้
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ""; // ไม่มีคีย์ก็ยังส่ง ack/push ได้
 
-// ==== ROLE ออโต้ ====
-// ใส่ UserId ของพ่อ (รูปแบบขึ้นต้นด้วย Uxxxxxxxxxxxxx)
+// ===== ROLE ออโต้ =====
+// ใส่ UserId ของพ่อ (ขึ้นต้นด้วย U...)
 const OWNER_ID = "U688db4b83e6cb70f4f5e5d121a8a07db";
 function getRole(userId: string): "owner" | "friend" {
-  return userId === OWNER_ID ? "owner" : "friend";
+  return userId === OWNER_ID ? "owner" : "friend"; // คนอื่นทั้งหมด = เพื่อนพ่อ
 }
+
+// ประกาศ userId อัตโนมัติครั้งแรกที่คุย (กันสแปม)
+const FIRST_SEEN = new Set<string>();
 
 const ACKS = [
   "", // เงียบ (ไม่กวนตา)
-  // "กำลังคิดให้พ่ออยู่ครับ…", // ถ้าพ่ออยากให้มี ack แสดงคอมเมนต์บรรทัดบน แล้วใช้บรรทัดนี้แทน
+  // "กำลังคิดให้พ่ออยู่ครับ…",
 ];
 
 function sign(body: string) {
@@ -34,7 +37,6 @@ async function lineReply(token: string, replyToken: string, messages: any[]) {
     body: JSON.stringify({ replyToken, messages })
   });
 }
-
 async function linePush(token: string, to: string, messages: any[]) {
   await fetch("https://api.line.me/v2/bot/message/push", {
     method: "POST",
@@ -65,17 +67,20 @@ export async function POST(req: NextRequest) {
 
         const text = (ev.message.text || "").trim();
 
-        // ── คำสั่งพิเศษ: ขอ UserId ของตัวเอง ──
-        if (text.toLowerCase() === "U688db4b83e6cb70f4f5e5d121a8a07db") {
-          await lineReply(TOKEN, replyToken, [{ type: "text", text: `UserId ของคุณคือ ${userId}` }]);
-          continue;
+        // ✅ ประกาศ UserId อัตโนมัติ "ครั้งแรก" ที่ผู้ใช้คุย
+        if (!FIRST_SEEN.has(userId)) {
+          FIRST_SEEN.add(userId);
+          await linePush(TOKEN, userId, [{
+            type: "text",
+            text: `UserId ของคุณคือ ${userId}\n(คัดลอกไปใส่ OWNER_ID ใน roles.ts ได้เลย)`
+          }]);
         }
 
-        // ── ตรวจ role ──
+        // ตรวจ role (owner / friend)
         const role = getRole(userId);
 
         // ให้เวลาคิด 1.2s ถ้าไม่ทันให้ ack ก่อน แล้ว push ตามทีหลัง
-        const thinkPromise = zetaThinkSmart(userId, text); // ใช้แกนเดิม
+        const thinkPromise = zetaThinkSmart(userId, text);
         const timer = new Promise<string>(r => setTimeout(() => r("__TIMEOUT__"), 1200));
         const first = await Promise.race([thinkPromise, timer]);
 
