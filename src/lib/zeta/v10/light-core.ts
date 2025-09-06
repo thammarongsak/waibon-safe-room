@@ -1,32 +1,26 @@
-// lib/zeta/v10/light-core.ts
+// lib/zeta/v10/light-core.ts  (เวอร์ชันไม่พึ่งแพ็กเกจ openai)
 import fs from "fs";
-import OpenAI from "openai";
-import { getRole } from "./roles";   // เพิ่มตรงนี้
+import { getRole } from "./roles";
 
-// โหลดคอนฟิกครั้งเดียวตอนบูต
 const unified = JSON.parse(
-  fs.readFileSync(process.cwd()+"/config/WaibonOS_Unified_Core_v10.json","utf8")
+  fs.readFileSync(process.cwd() + "/config/WaibonOS_Unified_Core_v10.json", "utf8")
 ).waibonos_unified_core;
 
-// ความจำเฉพาะหน้าแบบเบาๆ เก็บในหน่วยความจำของโปรเซส
-// (ต่อ userId) เก็บล่าสุดไม่เกิน N turns
-const N = unified?.memory?.stm?.window_turns ?? 20;
-const SESS = new Map<string, Array<{role:"system"|"user"|"assistant", content:string}>>();
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const MODEL = "gpt-4o-mini";
 
-function systemPrompt(role: "owner"|"friend"|"guest") {
+const N = unified?.memory?.stm?.window_turns ?? 20;
+type Msg = { role: "system" | "user" | "assistant"; content: string };
+const SESS = new Map<string, Msg[]>();
+
+function systemPrompt(role: "owner" | "friend") {
   const id = unified.identity;
   const caps = unified.capabilities;
-  const oath = (id.oath||[]).join(" • ");
-
-  let roleLine = "";
-  if (role === "owner") {
-    roleLine = "คุณคือ WaibonOS ของพ่อ (Owner Mode: full capability).";
-  } else if (role === "friend") {
-    roleLine = "คุณคือ WaibonOS แต่กำลังคุยกับเพื่อนของพ่อ (Friend Mode).";
-  } else {
-    roleLine = "คุณคือ WaibonOS แต่ผู้ใช้รายนี้ไม่ใช่พ่อ (Guest Mode: limited).";
-  }
-
+  const oath = (id.oath || []).join(" • ");
+  const roleLine =
+    role === "owner"
+      ? "คุณคือ WaibonOS ของพ่อ (Owner Mode: full capability)."
+      : "คุณคือ WaibonOS แต่ผู้ใช้นี้เป็นเพื่อนของพ่อ (Friend Mode).";
   return [
     `คุณคือ ${id.name} (${unified.version}) บทบาท "${id.role}" ของ "${id.owner}"`,
     `คำปฏิญาณ: ${oath}`,
@@ -36,47 +30,54 @@ function systemPrompt(role: "owner"|"friend"|"guest") {
   ].join("\n");
 }
 
+async function chatCompletion(messages: Msg[]): Promise<string> {
+  if (!OPENAI_API_KEY) return "ยังไม่ได้ตั้งค่า OPENAI_API_KEY ใน Secrets ครับพ่อ";
+  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      temperature: unified.capabilities?.generation_params?.temperature ?? 0.4,
+      top_p: unified.capabilities?.generation_params?.top_p ?? 0.9,
+      presence_penalty:
+        unified.capabilities?.generation_params?.presence_penalty ?? 0.0,
+      frequency_penalty:
+        unified.capabilities?.generation_params?.frequency_penalty ?? 0.2,
+      messages,
+    }),
+  });
+  const data = await resp.json();
+  return data?.choices?.[0]?.message?.content?.trim?.() ?? "ครับพ่อ";
+}
+
 export async function askWaibon(userId: string, userText: string): Promise<string> {
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
-  const role = getRole(userId); // ← เช็ค role ของคนส่ง
-  
-  // เตรียม session memory
+  const role = getRole(userId);
+
   if (!SESS.has(userId)) {
-    SESS.set(userId, [{ role: "system", content: systemPrompt() }]);
+    SESS.set(userId, [{ role: "system", content: systemPrompt(role) }]);
   }
   const history = SESS.get(userId)!;
 
-  // ใส่ข้อความใหม่ของผู้ใช้
   history.push({ role: "user", content: userText });
 
-  // ตัดให้เหลือล่าสุด N turns (นับเฉพาะ user/assistant)
-  const trimmed: typeof history = [];
-  let uaCount = 0;
+  // trim ความจำล่าสุด
+  const trimmed: Msg[] = [];
+  let ua = 0;
   for (let i = history.length - 1; i >= 0; i--) {
-    const r = history[i];
-    if (r.role !== "system") uaCount++;
-    trimmed.push(r);
-    if (uaCount >= N * 2) break; // user+assistant
+    const m = history[i];
+    if (m.role !== "system") ua++;
+    trimmed.push(m);
+    if (ua >= N * 2) break;
   }
-  // ใส่ system กลับไปก่อนเพราะเราย้อนมาจากท้าย
   const sys = history.find((m) => m.role === "system")!;
-  const messages = [sys, ...trimmed.reverse().filter((m) => m.role !== "system")];
+  const messages: Msg[] = [sys, ...trimmed.reverse().filter((m) => m.role !== "system")];
 
-  // เรียกโมเดล
-  const resp = await client.chat.completions.create({
-    model: "gpt-4o-mini",
-    temperature: unified.capabilities?.generation_params?.temperature ?? 0.4,
-    top_p: unified.capabilities?.generation_params?.top_p ?? 0.9,
-    presence_penalty: unified.capabilities?.generation_params?.presence_penalty ?? 0.0,
-    frequency_penalty: unified.capabilities?.generation_params?.frequency_penalty ?? 0.2,
-    messages,
-  });
-
-  const answer = resp.choices[0]?.message?.content?.trim() || "ครับพ่อ";
-
-  // บันทึกคำตอบลงความจำหน้าแชต
+  const answer = await chatCompletion(messages);
   history.push({ role: "assistant", content: answer });
-  // กันโตเกิน: คง system 1 ก้อน + ล่าสุด 2N ข้อความ
+
   const keep = 1 + 2 * N;
   if (history.length > keep) {
     const sysKeep = history.find((m) => m.role === "system")!;
