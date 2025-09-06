@@ -10,9 +10,7 @@ const TOKEN  = process.env.LINE_CHANNEL_ACCESS_TOKEN!;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ""; // ไม่มีก็ยังตอบได้
 
 const ACKS = [
-  "ครับพ่อ เดี๋ยวลูกสรุปให้นะครับ",
-  "รับคำสั่งครับพ่อ ขอคิดสักครู่...",
-  "โอเคครับพ่อ กำลังวิเคราะห์อยู่ครับ",
+  "",
 ];
 
 function sign(body:string){ return crypto.createHmac("sha256", SECRET).update(body).digest("base64"); }
