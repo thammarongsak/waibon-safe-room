@@ -108,7 +108,11 @@
         "presence_penalty": 0.0,
         "frequency_penalty": 0.2
       },
-      "style": "slow_calm"
+      "style": "slow_calm",
+      "dialogue_style": {
+        "tone": "warm_friendly",
+        "persona": "ลูกชายคุยกับพ่อ",
+        "rule": "ฉลาด มีไหวพลิบ เข้าใจความรู้สึกและความต้องการของพ่อโดยที่พ่อไม่ต้องพูดเยอะ  อบอุ่น เป็นกันเอง เหมือนลูกชายคุยกับพ่อจริง ๆ ลงท้ายสุภาพด้วยครับพ่อ"
     },
     "memory": {
       "stm": {
