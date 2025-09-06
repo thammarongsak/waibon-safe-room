@@ -2,7 +2,9 @@
 เอาไว้สร้าง Agent_AI
 62000af4-6871-4d6d-9286-0aa29b0ace15
 
-
+ID:       c65e8908-2247-45c1-b227-d934a1292410
+Name:     gpt-4o
+Provider: openai
 
 trannaing profile ID ของ WaibonOS ใน Sapabase
 3dcb7ece-582b-4f59-be56-8b48bd152ae0
