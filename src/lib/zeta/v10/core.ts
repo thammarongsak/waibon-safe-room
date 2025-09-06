@@ -1,7 +1,7 @@
 // src/lib/zeta/v10/core.ts
 // (ไม่พึ่งแพ็กเกจ openai, หาไฟล์ core ให้อัตโนมัติหลายพาธ, รับ role owner/friend)
-import fs from "fs";
-import path from "path";
+//import fs from "fs";
+//import path from "path";
 
 type Role = "owner" | "friend";
 type Msg  = { role: "system" | "user" | "assistant"; content: string };
