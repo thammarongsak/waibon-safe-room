@@ -1,28 +1,20 @@
-// app/api/line/webhook/route.ts
+// src/app/api/line/webhook/route.ts
 import { NextRequest } from "next/server";
 import crypto from "crypto";
-import { zetaThinkSmart } from "@/lib/zeta/v10/core"; // ใช้แกนเดิมของพ่อ
+import { zetaThinkSmart } from "@/lib/zeta/v10/core";
 
-export const runtime = "nodejs"; // กัน Next ใช้ Edge โดยไม่ตั้งใจ
+export const runtime = "nodejs";
 
 const SECRET = process.env.LINE_CHANNEL_SECRET!;
 const TOKEN  = process.env.LINE_CHANNEL_ACCESS_TOKEN!;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ""; // ไม่มีคีย์ก็ยังส่ง ack/push ได้
 
-// ===== ROLE ออโต้ =====
-// ใส่ UserId ของพ่อ (ขึ้นต้นด้วย U...)
+// ใส่ UserId ของพ่อ (ขึ้นต้นด้วย U…)
 const OWNER_ID = "U688db4b83e6cb70f4f5e5d121a8a07db";
-function getRole(userId: string): "owner" | "friend" {
-  return userId === OWNER_ID ? "owner" : "friend"; // คนอื่นทั้งหมด = เพื่อนพ่อ
-}
 
-// ประกาศ userId อัตโนมัติครั้งแรกที่คุย (กันสแปม)
+// ประกาศ userId อัตโนมัติครั้งแรก (กันสแปม)
 const FIRST_SEEN = new Set<string>();
-
-const ACKS = [
-  "", // เงียบ (ไม่กวนตา)
-  // "กำลังคิดให้พ่ออยู่ครับ…",
-];
+const ACKS = [""];
 
 function sign(body: string) {
   return crypto.createHmac("sha256", SECRET).update(body).digest("base64");
@@ -59,7 +51,7 @@ export async function POST(req: NextRequest) {
         const replyToken = ev?.replyToken;
         if (!userId || !replyToken) continue;
 
-        // รับเฉพาะข้อความตัวอักษร
+        // เฉพาะข้อความตัวอักษร
         if (ev.type !== "message" || ev.message?.type !== "text") {
           await lineReply(TOKEN, replyToken, [{ type: "text", text: "ตอนนี้ลูกรับเป็นข้อความตัวอักษรก่อนนะครับพ่อ" }]);
           continue;
@@ -67,31 +59,27 @@ export async function POST(req: NextRequest) {
 
         const text = (ev.message.text || "").trim();
 
-        // ✅ ประกาศ UserId อัตโนมัติ "ครั้งแรก" ที่ผู้ใช้คุย
+        // ประกาศ UserId ครั้งแรกที่คุย
         if (!FIRST_SEEN.has(userId)) {
           FIRST_SEEN.add(userId);
-          await linePush(TOKEN, userId, [{
-            type: "text",
-            text: `UserId ของคุณคือ ${userId}\n(คัดลอกไปใส่ OWNER_ID ใน roles.ts ได้เลย)`
-          }]);
+          await linePush(TOKEN, userId, [{ type: "text", text: `UserId ของคุณคือ ${userId}` }]);
         }
 
-        // ตรวจ role (owner / friend)
-        const role = getRole(userId);
+        // กำหนด role (พ่อ=owner, คนอื่น=friend)
+        const role = userId === OWNER_ID ? "owner" : "friend";
 
-        // ให้เวลาคิด 1.2s ถ้าไม่ทันให้ ack ก่อน แล้ว push ตามทีหลัง
-        const thinkPromise = zetaThinkSmart(userId, text);
+        // ให้เวลาคิด 1.2s ถ้าไม่ทัน ส่ง ack ก่อน
+        const thinkPromise = zetaThinkSmart(userId, text, role);
         const timer = new Promise<string>(r => setTimeout(() => r("__TIMEOUT__"), 1200));
         const first = await Promise.race([thinkPromise, timer]);
-
-        const decorate = (s: string) => (role === "friend" ? `(โหมดเพื่อนพ่อ) ${s}` : s);
+        const decorate = (s: string) => role === "friend" ? `(โหมดเพื่อนพ่อ) ${s}` : s;
 
         if (first !== "__TIMEOUT__") {
           await lineReply(TOKEN, replyToken, [{ type: "text", text: decorate(first) }]);
         } else {
           const ack = ACKS[Math.floor(Math.random() * ACKS.length)];
           await lineReply(TOKEN, replyToken, [{ type: "text", text: ack }]);
-          const ai = await thinkPromise; // คิดเสร็จจริง
+          const ai = await thinkPromise;
           await linePush(TOKEN, userId, [{ type: "text", text: decorate(ai) }]);
         }
       }
