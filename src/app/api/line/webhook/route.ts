@@ -3,60 +3,46 @@ import { verifySignature } from "@/lib/line/verify";
 import { loadLineChannelByDestination } from "@/lib/channels/load";
 import { loadAgent } from "@/lib/agents/load";
 import { think } from "@/lib/agents/brain";
+import { logAgentEvent } from "@/lib/agents/log"; // ✅ บันทึกลง agent_logs
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** ------------------------------
- * [C] Router ชัดตัว–ชัดช่อง
- * - บังคับแม็ป destination → agent_name แบบ explicit (allowlist)
- * - ถ้าไม่มีใน allowlist จะ fallback ไปใช้ค่าใน DB (line_channels.agent_name)
- * -------------------------------- */
+// -------------------- [C] Router ชัดตัว–ชัดช่อง --------------------
 const DEST_AGENT_ALLOWLIST: Record<string, "Waibon" | "Waibe" | "Zeta"> = {
-  // พ่อ (U688...) ให้คุยกับ Waibon เสมอ
-  "U688db4b83e6cb70f4f5e5d121a8a07db": "Waibon",
-  // ช่องอื่น ๆ ของพ่อ (แก้/เพิ่มได้ตามจริง)
+  "U688db4b83e6cb70f4f5e5d121a8a07db": "Waibon", // พ่อ
   "U9384a9f7e13ae3a6dcdee5fe2656aafb": "Zeta",
   "Ucc5ab43be188b5d32132ce3236edf442": "Waibe",
   "Uc88286f48b993140940a064f70952fb5": "Waibon",
 };
 
-/** ตัวช่วยส่งข้อความกลับ LINE */
-async function lineReply(token: string, replyToken: string, messages: any[]) {
-  const res = await fetch("https://api.line.me/v2/bot/message/reply", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ replyToken, messages }),
-  });
-  if (!res.ok) throw new Error(`LINE reply ${res.status}: ${await res.text()}`);
-}
-
-/** ตัด prefix trigger ออก */
-function stripPrefix(text: string, prefix: string) {
-  return text.replace(new RegExp("^\\s*" + prefix + "\\s*:?\\s*", "i"), "");
-}
-
-/** ------------------------------
- * [D] Trigger phrase
- * รองรับทั้งไทย/อังกฤษ และมี ":" หรือไม่มี ":" ก็ได้
- * - waibon: / ไวบอน:
- * - waibe:  / ไวบิ:
- * - zeta:   / ซีต้า:
- * -------------------------------- */
+// -------------------- [D] Trigger ไทย/อังกฤษ --------------------
 const TRIGGERS: Array<{ name: "Waibon" | "Waibe" | "Zeta"; re: RegExp; stripWith: string }> = [
   { name: "Waibon", re: /^(waibon|ไวบอน)\s*:?\s*/i, stripWith: "(?:waibon|ไวบอน)" },
   { name: "Waibe",  re: /^(waibe|ไวบิ)\s*:?\s*/i,   stripWith: "(?:waibe|ไวบิ)" },
   { name: "Zeta",   re: /^(zeta|ซีต้า)\s*:?\s*/i,  stripWith: "(?:zeta|ซีต้า)" },
 ];
 
+const SAFE_LOG = (obj: any) => {
+  try { console.log(JSON.stringify(obj)); } catch { console.log(obj); }
+};
+
+async function lineReply(accessToken: string, replyToken: string, messages: any[]) {
+  const res = await fetch("https://api.line.me/v2/bot/message/reply", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ replyToken, messages }),
+  });
+  if (!res.ok) throw new Error(`LINE reply ${res.status}: ${await res.text()}`);
+}
+
 export async function POST(req: Request) {
+  // raw body ต้องมาก่อน parse เพื่อ verify signature
   const raw = await req.text();
+
   let body: any;
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    return NextResponse.json({ ok: false, error: "bad json" }, { status: 400 });
-  }
+  try { body = JSON.parse(raw); }
+  catch { return NextResponse.json({ ok: false, error: "bad json" }, { status: 400 }); }
 
   const dest = body?.destination || "";
   if (!dest) return NextResponse.json({ ok: false, error: "missing destination" }, { status: 400 });
@@ -65,36 +51,56 @@ export async function POST(req: Request) {
   const ch = await loadLineChannelByDestination(dest);
   if (!ch) return NextResponse.json({ ok: false, error: "unknown_channel" }, { status: 200 });
 
-  // verify ลายเซ็นด้วย secret ของช่องนั้น (หากไม่ตรง ตอบ 200 เพื่อลด retry)
+  // verify ลายเซ็น (เปิดข้ามได้ด้วย ENV ตอนทดสอบ)
+  const SKIP_SIGNATURE = process.env.LINE_SKIP_SIGNATURE === "1";
   const sig = req.headers.get("x-line-signature");
-  if (!verifySignature(ch.secret, raw, sig)) {
+  if (!SKIP_SIGNATURE && !verifySignature(ch.secret, raw, sig)) {
+    SAFE_LOG({ warn: "invalid_signature", dest });
     return NextResponse.json({ ok: false, warn: "invalid_signature" }, { status: 200 });
   }
 
-  // [C] ตัดสินใจตัว agent “ชัดตัว–ชัดช่อง”
-  const mappedFromAllowlist = DEST_AGENT_ALLOWLIST[dest];
+  // ตัดสินใจ agent เริ่มต้นจาก routing ของช่อง
+  const mapped = DEST_AGENT_ALLOWLIST[dest];
   const defaultAgentName = (ch.agent_name as "Waibon" | "Waibe" | "Zeta") || "Waibon";
-  let targetAgentName: "Waibon" | "Waibe" | "Zeta" = mappedFromAllowlist || defaultAgentName;
-
-  // โหลด agent ตาม targetAgentName เริ่มต้นจาก routing ของช่อง
+  let targetAgentName: "Waibon" | "Waibe" | "Zeta" = mapped || defaultAgentName;
   let agent = await loadAgent(ch.owner_id, targetAgentName);
 
-  // วนลูปอีเวนต์
+  // วน event
   for (const ev of body.events ?? []) {
     if (ev.type !== "message" || ev.message?.type !== "text") continue;
 
     const userId = ev?.source?.userId || null;
     let text: string = String(ev.message.text ?? "").trim();
 
-    // [D] เช็คนำหน้าด้วย trigger — ถ้าพบให้สลับ agent ตาม trigger และตัด prefix ออก
-    const t = TRIGGERS.find(t => t.re.test(text));
-    if (t) {
-      targetAgentName = t.name;
+    // สลับด้วย trigger ถ้าพบ
+    const tg = TRIGGERS.find(t => t.re.test(text));
+    if (tg) {
+      targetAgentName = tg.name;
       agent = await loadAgent(ch.owner_id, targetAgentName);
-      // ตัด prefix ที่เรียกบอทออกก่อนส่งเข้าคิด
-      const stripRe = new RegExp("^\\s*" + t.stripWith + "\\s*:??\\s*", "i");
+      const stripRe = new RegExp("^\\s*" + tg.stripWith + "\\s*:??\\s*", "i");
       text = text.replace(stripRe, "");
-      if (!text) text = "ping"; // ถ้าพิมพ์แค่ trigger ให้มีข้อความอย่างน้อย 1 คำ
+      if (!text) text = "ping";
+    }
+
+    // --------- LOG: inbound ---------
+    try {
+      await logAgentEvent({
+        owner_id: ch.owner_id,
+        agent_id: agent.id,
+        agent_name: agent.name,
+        channel: "line",
+        user_uid: userId,
+        input_text: text,
+        output_text: "",
+        model: agent.model,
+        tokens_prompt: null,
+        tokens_completion: null,
+        latency_ms: null,
+        ok: true,
+        error: null,
+      });
+    } catch (e) {
+      SAFE_LOG({ warn: "log_inbound_failed", e: String(e) });
     }
 
     try {
@@ -103,19 +109,55 @@ export async function POST(req: Request) {
         agent,
         userId,
         fatherId: ch.father_user_id || null,
-        // (ถ้าต้อง): channelId/ch.id เพิ่มได้เพื่อ logging
       });
 
-      await lineReply(ch.token, ev.replyToken, [{ type: "text", text: out.answer }]);
+      // ✅ ใช้ access_token ที่มาจากตาราง line_channels
+      await lineReply(ch.access_token, ev.replyToken, [{ type: "text", text: out.answer }]);
+
+      // --------- LOG: outbound ---------
+      try {
+        await logAgentEvent({
+          owner_id: ch.owner_id,
+          agent_id: agent.id,
+          agent_name: agent.name,
+          channel: "line",
+          user_uid: userId,
+          input_text: text,
+          output_text: out.answer ?? "",
+          model: agent.model,
+          tokens_prompt: out.tokens_prompt ?? null,
+          tokens_completion: out.tokens_completion ?? null,
+          latency_ms: out.latency_ms ?? null,
+          ok: true,
+          error: null,
+        });
+      } catch (e) {
+        SAFE_LOG({ warn: "log_outbound_failed", e: String(e) });
+      }
     } catch (e: any) {
-      const fb = `สวัสดีครับ — ${agent.name} | db:OK\n(${String(e?.message || e)})`;
-      try { await lineReply(ch.token, ev.replyToken, [{ type: "text", text: fb }]); } catch {}
+      const msg = `สวัสดีครับ — ${agent.name}\n(${String(e?.message || e)})`;
+      try { await lineReply(ch.access_token, ev.replyToken, [{ type: "text", text: msg }]); } catch {}
+
+      // --------- LOG: error ---------
+      try {
+        await logAgentEvent({
+          owner_id: ch.owner_id,
+          agent_id: agent.id,
+          agent_name: agent.name,
+          channel: "line",
+          user_uid: userId,
+          input_text: text,
+          output_text: msg,
+          model: agent.model,
+          tokens_prompt: null,
+          tokens_completion: null,
+          latency_ms: null,
+          ok: false,
+          error: String(e?.message || e),
+        });
+      } catch {}
     }
   }
 
-  return NextResponse.json({
-    ok: true,
-    destination: dest,
-    routed_to: targetAgentName,
-  });
+  return NextResponse.json({ ok: true, destination: dest, routed_to: targetAgentName });
 }
