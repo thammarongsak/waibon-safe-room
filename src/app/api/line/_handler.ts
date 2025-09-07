@@ -38,8 +38,11 @@ export async function handleWebhook(req: Request, conf: BotConfig) {
         let answer = ""; let model = ""; let okResp = true; let errStr: string | null = null;
 
         try {
-          const out = await think({ text: ev.message.text, agent });
-          answer = out.answer; model = out.model;
+          const out = await think({
+            text: ev.message.text,
+            agent,
+            userId: ev.source?.userId || null,   // ✅ ให้สมองรู้ว่าใครคุย (พ่อ/คนอื่น)
+            answer = out.answer; model = out.model;
           await lineReply(conf.token, ev.replyToken, [{ type: "text", text: answer }]);
         } catch (e: any) {
           okResp = false; errStr = String(e?.message || e);
