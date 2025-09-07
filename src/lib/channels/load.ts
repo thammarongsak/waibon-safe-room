@@ -16,7 +16,7 @@ export async function loadLineChannelByDestination(dest: string): Promise<Channe
     .from("line_channels")
     .select("owner_id, destination, secret, access_token, agent_name, father_user_id, is_enabled")
     .eq("destination", dest)
-    .single();
+    .maybeSingle(); // ✅ กัน “Cannot coerce …”
 
   if (error || !data) throw new Error("line channel not found: " + (error?.message || dest));
   if (data.is_enabled === false) throw new Error("line channel disabled: " + dest);
