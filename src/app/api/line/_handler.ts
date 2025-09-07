@@ -41,8 +41,11 @@ export async function handleWebhook(req: Request, conf: BotConfig) {
           const out = await think({
             text: ev.message.text,
             agent,
-            userId: ev.source?.userId || null,   // ✅ ให้สมองรู้ว่าใครคุย (พ่อ/คนอื่น)
-            answer = out.answer; model = out.model;
+            userId: ev.source?.userId || null,   // ✅
+          });
+          answer = out.answer;
+          model = out.model;
+          
           await lineReply(conf.token, ev.replyToken, [{ type: "text", text: answer }]);
         } catch (e: any) {
           okResp = false; errStr = String(e?.message || e);
