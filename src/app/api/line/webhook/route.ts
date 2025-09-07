@@ -43,6 +43,7 @@ export async function POST(req: Request) {
   // 4) วนตอบข้อความ
   for (const ev of body.events ?? []) {
     if (ev.type === "message" && ev.message?.type === "text") {
+       console.log("from user =", ev.source?.userId); // [3] userId ผู้ทัก (นี่แหละของพ่อจริง)
       try {
         const out = await think({
           text: ev.message.text,
