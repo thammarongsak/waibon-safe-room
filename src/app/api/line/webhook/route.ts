@@ -128,6 +128,35 @@ export async function POST(req: Request) {
       SAFE_LOG({ warn: "log_inbound_failed", e: String(e) });
     }
 
+// ...อยู่ก่อน try { const out = await think({ ... }) } นิดเดียว
+
+// 🔎 QUICK DEBUG COMMANDS (ตอบกลับทันที ไม่ต้องคิด)
+const token = getChannelAccessToken(ch);
+if (/^!(who|whoami)$/i.test(text)) {
+  const info = [
+    `agent=${agent.name}`,
+    `dest=${dest}`,
+    `routed_from=${DEST_AGENT_ALLOWLIST[dest] ? "allowlist" : "db"}`,
+    `father=${ch.father_user_id || "-"}`,
+    `model=${modelToString(agent.model)}`,
+    `caps=${JSON.stringify(agent.effective_capabilities || {})}`
+  ].join(" | ");
+  await lineReply(token, ev.replyToken, [{ type: "text", text: info }]);
+  // log แล้วข้ามไปอีเวนต์ถัดไป
+  try { await logAgentEvent({
+    owner_id: ch.owner_id, agent_id: agent.id, agent_name: agent.name,
+    channel: "line", user_uid: userId, input_text: text, output_text: info,
+    model: modelToString(agent.model), tokens_prompt: null, tokens_completion: null,
+    latency_ms: null, ok: true, error: null
+  }); } catch {}
+  continue;
+}
+
+if (/^!ping$/i.test(text)) {
+  await lineReply(token, ev.replyToken, [{ type: "text", text: `pong from ${agent.name}` }]);
+  continue;
+}
+    
     try {
       const out: any = await think({
         text,
@@ -135,7 +164,7 @@ export async function POST(req: Request) {
         userId,
         fatherId: ch.father_user_id || null,
       });
-
+    
       const token = getChannelAccessToken(ch);
       await lineReply(token, ev.replyToken, [{ type: "text", text: out?.answer ?? "..." }]);
 
