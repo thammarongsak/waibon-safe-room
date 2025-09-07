@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { loadAgent, AgentName } from "@/lib/agents/load";
+import { loadAgent } from "@/lib/agents/load";
 
 // ✅ ประกาศเองในไฟล์นี้
 type AgentName = "Waibon" | "Waibe" | "Zeta";
