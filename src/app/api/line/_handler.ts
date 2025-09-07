@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { verifySignature } from "@/lib/line/verify";
 import { lineReply } from "@/lib/line/reply";
 import { loadAgent } from "@/lib/agents/load";
+import { think } from "@/lib/agents/brain";
+
 
 const OWNER_ID = "62000af4-6871-4d6d-9286-0aa29b0ace15"; // ของพ่อ
 
@@ -16,9 +18,9 @@ export async function handleWebhook(req: Request, conf: BotConfig) {
   const agent = await loadAgent(OWNER_ID, conf.agentName);
 
   for (const ev of body.events ?? []) {
-    if (ev.type === "message" && ev.message?.type === "text") {
-      const msg = `สวัสดี พ่อครับ — ${agent.name} | tp:${agent.training.version} | db:OK`;
-      await lineReply(conf.token, ev.replyToken, [{ type: "text", text: msg }]);
+  if (ev.type === "message" && ev.message?.type === "text") {
+    const answer = await think({ text: ev.message.text, agent });
+    await lineReply(conf.token, ev.replyToken, [{ type: "text", text: answer }]);
     }
   }
   return NextResponse.json({ ok: true });
