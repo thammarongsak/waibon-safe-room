@@ -22,6 +22,8 @@ export async function POST(req: Request) {
   try { body = JSON.parse(raw); }
   catch { return NextResponse.json({ ok: false, error: "bad json" }, { status: 400 }); }
 
+  console.log("LINE destination =", body?.destination);
+  
   const dest = body?.destination || "";
   if (!dest) return NextResponse.json({ ok: false, error: "missing destination" }, { status: 400 });
 
