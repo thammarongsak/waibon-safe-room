@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { loadAgent, AgentName } from "@/lib/agents/load";
 
+// ✅ ประกาศเองในไฟล์นี้
+type AgentName = "Waibon" | "Waibe" | "Zeta";
+
 const OWNER_ID = "62000af4-6871-4d6d-9286-0aa29b0ace15";
 
 export const runtime = "nodejs";
