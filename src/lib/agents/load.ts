@@ -6,14 +6,16 @@ const supa = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-type AgentName = "Waibon" | "Waibe" | "Zeta";
+// ✅ ใส่ export ตรงนี้
+export type AgentName = "Waibon" | "Waibe" | "Zeta";
 
-type LoadedAgent = {
+export type LoadedAgent = {
   id: string;
   name: AgentName;
   training_profile_id: string;
   training: { version: string; prompts: any };
   capabilities: any;
+  modelId?: string;
 };
 
 export async function loadAgent(ownerId: string, name: AgentName): Promise<LoadedAgent> {
