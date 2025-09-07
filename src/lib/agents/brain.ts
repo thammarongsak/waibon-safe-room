@@ -98,8 +98,10 @@ export async function think(input: ThinkIn): Promise<ThinkOut> {
 
   await appendMemory(ownerId, subject, "user", text);
 
+  // เลือกโมเดล: ถ้าโหลดได้จาก ai_models (agent.model?.name) ใช้อันนั้น; ไม่งั้น fallback ENV
+  let usedModel = agent.model?.name || (typeof agent.modelId === "string" && !agent.model?.name ? agent.modelId : PRIMARY_MODEL);
   let answer = "";
-  let usedModel = agent.modelId || PRIMARY_MODEL;
+
   try {
     const r1 = await chat(usedModel, messages, 0.45);
     answer = r1.choices?.[0]?.message?.content?.trim() || "รับทราบครับพ่อ";
