@@ -1,3 +1,4 @@
+// src/lib/line/verify.ts
 import crypto from "crypto";
 export function verifySignature(secret: string, body: string, sig: string | null) {
   if (!sig) return false;
