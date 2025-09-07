@@ -16,7 +16,6 @@ function modelToString(model: any): string {
 
 /* ---------- helper: safely get LINE access token ---------- */
 function getChannelAccessToken(ch: any): string {
-  // รองรับชื่อฟิลด์ที่พบได้บ่อย
   const t =
     ch?.access_token ??
     ch?.token ??
@@ -25,6 +24,16 @@ function getChannelAccessToken(ch: any): string {
     ch?.channelAccessToken;
   if (!t) throw new Error("Missing LINE access token on channel config");
   return String(t);
+}
+
+/* ---------- helper: safe numeric extraction from any result ---------- */
+function num(obj: any, key: string): number | null {
+  try {
+    const v = obj?.[key];
+    return typeof v === "number" ? v : null;
+  } catch {
+    return null;
+  }
 }
 
 /* ---------- [C] Router: destination → agent (allowlist) ---------- */
@@ -120,16 +129,15 @@ export async function POST(req: Request) {
     }
 
     try {
-      const out = await think({
+      const out: any = await think({
         text,
         agent,
         userId,
         fatherId: ch.father_user_id || null,
       });
 
-      // ✅ ใช้ token จาก channel แบบปลอด type
       const token = getChannelAccessToken(ch);
-      await lineReply(token, ev.replyToken, [{ type: "text", text: out.answer }]);
+      await lineReply(token, ev.replyToken, [{ type: "text", text: out?.answer ?? "..." }]);
 
       // outbound log
       try {
@@ -140,11 +148,11 @@ export async function POST(req: Request) {
           channel: "line",
           user_uid: userId,
           input_text: text,
-          output_text: out.answer ?? "",
+          output_text: out?.answer ?? "",
           model: modelToString(agent.model),
-          tokens_prompt: out.tokens_prompt ?? null,
-          tokens_completion: out.tokens_completion ?? null,
-          latency_ms: out.latency_ms ?? null,
+          tokens_prompt: num(out, "tokens_prompt"),
+          tokens_completion: num(out, "tokens_completion"),
+          latency_ms: num(out, "latency_ms"),
           ok: true,
           error: null,
         });
