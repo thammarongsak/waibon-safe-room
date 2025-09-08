@@ -42,7 +42,7 @@ function num(obj: any, key: string): number | null {
 
 /* ---------- [C] Router: destination → agent (allowlist) ---------- */
 const DEST_AGENT_ALLOWLIST: Record<string, "Waibon" | "Waibe" | "Zeta"> = {
-  //"U688db4b83e6cb70f4f5e5d121a8a07db": "Waibon", // พ่อ
+  //"U688db4b83e6cb70f4f5e5d121a8a07db": "Waibon", // พ่อ (อย่าใช้เป็น destination)
   "Uc88286f48b993140940a064f70952fb5": "Waibon",
   "U9384a9f7e13ae3a6dcdee5fe2656aafb": "Waibe",
   "Ucc5ab43be188b5d32132ce3236edf442": "Zeta",
@@ -57,6 +57,7 @@ const TRIGGERS: Array<{ name: "Waibon" | "Waibe" | "Zeta"; re: RegExp; stripWith
 
 const SAFE_LOG = (o: any) => { try { console.log(JSON.stringify(o)); } catch { console.log(o); } };
 
+/* ---------- LINE reply helper (ใช้ access token ของ channel ปัจจุบัน) ---------- */
 async function lineReply(accessToken: string, replyToken: string, messages: any[]) {
   const res = await fetch("https://api.line.me/v2/bot/message/reply", {
     method: "POST",
@@ -82,7 +83,7 @@ export async function POST(req: Request) {
 
   // 2) verify signature (allow skip for test)
   const SKIP_SIGNATURE = process.env.LINE_SKIP_SIGNATURE === "1";
-  const sig = req.headers.get("x-line-signature");
+  const sig = (req.headers as any).get?.("x-line-signature") || (req as any).headers?.get?.("x-line-signature");
   if (!SKIP_SIGNATURE && !verifySignature(ch.secret, raw, sig)) {
     SAFE_LOG({ warn: "invalid_signature", dest });
     return NextResponse.json({ ok: false, warn: "invalid_signature" }, { status: 200 });
@@ -100,6 +101,69 @@ export async function POST(req: Request) {
 
     const userId = ev?.source?.userId || null;
     let text: string = String(ev.message.text ?? "").trim();
+    const token = getChannelAccessToken(ch);
+
+    // ===== [เพิ่ม] คำสั่งกลุ่ม Hive (ไม่แตะลอจิกเดิม) =====
+    const sourceType = ev?.source?.type;             // 'user' | 'group' | 'room'
+    const groupId = ev?.source?.groupId as string|undefined;
+    const BASE_URL = (process.env.NEXT_PUBLIC_BASE_URL || "").replace(/\/+$/,"");
+
+    if (sourceType === "group" && groupId && text.startsWith("!hive")) {
+      try {
+        if (/^!hive\s+start/i.test(text)) {
+          const resp = await fetch(`${BASE_URL}/api/hive/run`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ groupId, rounds: 3 })
+          }).then(r => r.json());
+
+          const last3 = (resp?.transcript || []).slice(-3)
+            .map((t:any)=>`#${t.turn_no} ${t.agent_name}\n${t.output}`).join("\n\n");
+
+          await lineReply(token, ev.replyToken, [{ type: "text", text: `เริ่มประชุม Hive แล้ว\n\n${last3 || "(ยังไม่มีบทสนทนา)"}` }]);
+          continue;
+        }
+
+        if (/^!hive\s+next/i.test(text)) {
+          const resp = await fetch(`${BASE_URL}/api/hive/run`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ groupId, rounds: 1 })
+          }).then(r => r.json());
+
+          const last = (resp?.transcript || []).slice(-1)[0];
+          await lineReply(token, ev.replyToken, [{
+            type: "text",
+            text: last ? `รอบถัดไป #${last.turn_no} (${last.agent_name})\n${last.output}` : "ยังไม่มีข้อความ"
+          }]);
+          continue;
+        }
+
+        if (/^!hive\s+status/i.test(text)) {
+          const resp = await fetch(`${BASE_URL}/api/hive/status?groupId=${encodeURIComponent(groupId)}`).then(r=>r.json());
+          const s = resp?.session;
+          const last3 = (resp?.turns || []).slice(-3)
+            .map((t:any)=>`#${t.turn_no} ${t.agent_name}\n${t.output}`).join("\n\n");
+          await lineReply(token, ev.replyToken, [{
+            type: "text",
+            text: s ? `สถานะ: ${s.status} | เทิร์นล่าสุด: ${s.last_turn}\n\n${last3}` : "ยังไม่มีห้อง Hive"
+          }]);
+          continue;
+        }
+
+        if (/^!hive\s+stop/i.test(text)) {
+          // ใช้ status endpoint/DB ใน route ฝั่ง server จัดการ; ที่นี่แจ้งปิดให้ผู้ใช้
+          await fetch(`${BASE_URL}/api/hive/status?groupId=${encodeURIComponent(groupId)}`).catch(()=>{});
+          // ถ้ามี API แยก set done ก็เรียกเพิ่มได้ในอนาคต
+          await lineReply(token, ev.replyToken, [{ type: "text", text: "ปิดวง Hive แล้วครับ" }]);
+          continue;
+        }
+      } catch (e:any) {
+        await lineReply(token, ev.replyToken, [{ type: "text", text: `Hive error: ${String(e?.message||e)}` }]);
+        continue;
+      }
+    }
+    // ===== [จบส่วนเพิ่ม Hive] =====
 
     // trigger → switch agent
     const tg = TRIGGERS.find(t => t.re.test(text));
@@ -132,36 +196,32 @@ export async function POST(req: Request) {
       SAFE_LOG({ warn: "log_inbound_failed", e: String(e) });
     }
 
-// ...อยู่ก่อน try { const out = await think({ ... }) } นิดเดียว
+    // 🔎 QUICK DEBUG COMMANDS (ตอบกลับทันที ไม่ต้องคิด)
+    if (/^!(who|whoami)$/i.test(text)) {
+      const info = [
+        `agent=${agent.name}`,
+        `dest=${dest}`,
+        `routed_from=${DEST_AGENT_ALLOWLIST[dest] ? "allowlist" : "db"}`,
+        `father=${ch.father_user_id || "-"}`,
+        `model=${modelToString(agent.model)}`,
+        `caps=${JSON.stringify(getCaps(agent))}`
+      ].join(" | ");
 
-// 🔎 QUICK DEBUG COMMANDS (ตอบกลับทันที ไม่ต้องคิด)
-const token = getChannelAccessToken(ch);
-if (/^!(who|whoami)$/i.test(text)) {
-  const info = [
-  `agent=${agent.name}`,
-  `dest=${dest}`,
-  `routed_from=${DEST_AGENT_ALLOWLIST[dest] ? "allowlist" : "db"}`,
-  `father=${ch.father_user_id || "-"}`,
-  `model=${modelToString(agent.model)}`,
-  `caps=${JSON.stringify(getCaps(agent))}`   // ✅ ใช้ helper แทน agent.effective_capabilities
-].join(" | ");
+      await lineReply(token, ev.replyToken, [{ type: "text", text: info }]);
+      try { await logAgentEvent({
+        owner_id: ch.owner_id, agent_id: agent.id, agent_name: agent.name,
+        channel: "line", user_uid: userId, input_text: text, output_text: info,
+        model: modelToString(agent.model), tokens_prompt: null, tokens_completion: null,
+        latency_ms: null, ok: true, error: null
+      }); } catch {}
+      continue;
+    }
 
-  await lineReply(token, ev.replyToken, [{ type: "text", text: info }]);
-  // log แล้วข้ามไปอีเวนต์ถัดไป
-  try { await logAgentEvent({
-    owner_id: ch.owner_id, agent_id: agent.id, agent_name: agent.name,
-    channel: "line", user_uid: userId, input_text: text, output_text: info,
-    model: modelToString(agent.model), tokens_prompt: null, tokens_completion: null,
-    latency_ms: null, ok: true, error: null
-  }); } catch {}
-  continue;
-}
+    if (/^!ping$/i.test(text)) {
+      await lineReply(token, ev.replyToken, [{ type: "text", text: `pong from ${agent.name}` }]);
+      continue;
+    }
 
-if (/^!ping$/i.test(text)) {
-  await lineReply(token, ev.replyToken, [{ type: "text", text: `pong from ${agent.name}` }]);
-  continue;
-}
-    
     try {
       const out: any = await think({
         text,
@@ -169,8 +229,7 @@ if (/^!ping$/i.test(text)) {
         userId,
         fatherId: ch.father_user_id || null,
       });
-    
-      const token = getChannelAccessToken(ch);
+
       await lineReply(token, ev.replyToken, [{ type: "text", text: out?.answer ?? "..." }]);
 
       // outbound log
@@ -194,7 +253,6 @@ if (/^!ping$/i.test(text)) {
         SAFE_LOG({ warn: "log_outbound_failed", e: String(e) });
       }
     } catch (e: any) {
-      const token = getChannelAccessToken(ch);
       const msg = `สวัสดีครับ — ${agent.name}\n(${String(e?.message || e)})`;
       try { await lineReply(token, ev.replyToken, [{ type: "text", text: msg }]); } catch {}
 
