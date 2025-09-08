@@ -1,8 +1,15 @@
-export async function lineReply(token: string, replyToken: string, messages: any[]) {
-  const res = await fetch("https://api.line.me/v2/bot/message/reply", {
+// src/lib/line/reply.ts
+export async function replyText(replyToken: string, text: string) {
+  const token = process.env.LINE_TOKEN_WAIBONOS!; // ตั้งใน .env
+  await fetch("https://api.line.me/v2/bot/message/reply", {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ replyToken, messages }),
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`
+    },
+    body: JSON.stringify({
+      replyToken,
+      messages: [{ type: "text", text }]
+    })
   });
-  if (!res.ok) throw new Error(`LINE reply ${res.status}: ${await res.text()}`);
 }
