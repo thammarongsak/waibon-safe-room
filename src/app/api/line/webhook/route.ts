@@ -43,9 +43,20 @@ function num(obj: any, key: string): number | null {
 /* ---------- [C] Router: destination → agent (allowlist) ---------- */
 const DEST_AGENT_ALLOWLIST: Record<string, "Waibon" | "Waibe" | "Zeta"> = {
   "U688db4b83e6cb70f4f5e5d121a8a07db": "Waibon", // พ่อ
-  "U9384a9f7e13ae3a6dcdee5fe2656aafb": "Zeta",
-  "Ucc5ab43be188b5d32132ce3236edf442": "Waibe",
+
+  // Waibon (ทั้ง 2 ช่องของเดิม)
+  "U688db4b83e6cb70f4f5e5d121a8a07db": "Waibon",
   "Uc88286f48b993140940a064f70952fb5": "Waibon",
+
+  // Waibe: เดิม + ใหม่
+  "Ucc5ab43be188b5d32132ce3236edf442": "Waibe",
+  "U0890cec329e76ee3b8dcf02ac8b4b862": "Waibe",
+
+  // Zeta: เดิม + ใหม่
+  "U9384a9f7e13ae3a6dcdee5fe2656aafb": "Zeta",
+  "U9387f370849acf05d1b61c2de1dc7f86": "Zeta",
+};
+
 };
 
 /* ---------- [D] Trigger ไทย/อังกฤษ ---------- */
