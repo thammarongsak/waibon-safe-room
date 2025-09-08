@@ -8,9 +8,9 @@ export async function POST() {
   try {
     await upsertHiveAgents();
     await publishHiveKickoff();
-    const status = await hiveStatus();
-    return NextResponse.json({ ok: true, started: true, ...status });
-  } catch (err: any) {
-    return NextResponse.json({ ok: false, error: err?.message || String(err) }, { status: 500 });
+    const s = await hiveStatus();
+    return NextResponse.json({ ok: true, started: true, ...s });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || String(e) }, { status: 500 });
   }
 }
