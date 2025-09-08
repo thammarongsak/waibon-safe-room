@@ -6,14 +6,15 @@ function need(name: string): string {
 }
 
 export const ENV = {
+  // Supabase
   SUPABASE_URL: need('NEXT_PUBLIC_SUPABASE_URL'),
   SUPABASE_ANON_KEY: need('NEXT_PUBLIC_SUPABASE_ANON_KEY'),
   SUPABASE_SERVICE_ROLE_KEY: need('SUPABASE_SERVICE_ROLE_KEY'),
 
-  // LLM keys (มีอันไหนใช้ตาม provider นั้น ๆ)
+  // LLM keys
   OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
   LLAMA_API_KEY: process.env.LLAMA_API_KEY || process.env.LLAMA3_API_KEY || '',
 
-  // LINE (มีหรือไม่มีก็ไม่ล้ม)
+  // LINE (optional for dev)
   LINE_CHANNEL_SECRET: process.env.LINE_CHANNEL_SECRET || '',
 };
