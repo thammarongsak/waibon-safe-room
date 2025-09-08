@@ -7,8 +7,8 @@ import { think } from "@/lib/agents/brain";
 import { loadAgent } from "@/lib/agents/load";
 
 const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!
+  process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+  process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
 
 // ใช้ owner_id จาก ENV (พ่อมีอยู่แล้วใน Render: WAIBON_OWNER_ID)
