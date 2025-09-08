@@ -14,6 +14,10 @@ function modelToString(model: any): string {
   return model?.model_key ?? model?.name ?? model?.id ?? "unknown";
 }
 
+function getCaps(agent: any): any {
+  return agent?.effective_capabilities ?? agent?.capabilities ?? agent?.caps ?? {};
+}
+
 /* ---------- helper: safely get LINE access token ---------- */
 function getChannelAccessToken(ch: any): string {
   const t =
@@ -134,13 +138,14 @@ export async function POST(req: Request) {
 const token = getChannelAccessToken(ch);
 if (/^!(who|whoami)$/i.test(text)) {
   const info = [
-    `agent=${agent.name}`,
-    `dest=${dest}`,
-    `routed_from=${DEST_AGENT_ALLOWLIST[dest] ? "allowlist" : "db"}`,
-    `father=${ch.father_user_id || "-"}`,
-    `model=${modelToString(agent.model)}`,
-    `caps=${JSON.stringify(agent.effective_capabilities || {})}`
-  ].join(" | ");
+  `agent=${agent.name}`,
+  `dest=${dest}`,
+  `routed_from=${DEST_AGENT_ALLOWLIST[dest] ? "allowlist" : "db"}`,
+  `father=${ch.father_user_id || "-"}`,
+  `model=${modelToString(agent.model)}`,
+  `caps=${JSON.stringify(getCaps(agent))}`   // ✅ ใช้ helper แทน agent.effective_capabilities
+].join(" | ");
+
   await lineReply(token, ev.replyToken, [{ type: "text", text: info }]);
   // log แล้วข้ามไปอีเวนต์ถัดไป
   try { await logAgentEvent({
