@@ -8,17 +8,15 @@ import { orchestrateHive, ensureHiveSubscriptions } from '@/lib/hive';
 export const dynamic = 'force-dynamic';
 
 function verifySignature(body: string, signature: string | null) {
-  if (!ENV.LINE_CHANNEL_SECRET) return true; // dev
+  if (!ENV.LINE_CHANNEL_SECRET) return true; // dev mode
   if (!signature) return false;
   const h = crypto.createHmac('sha256', ENV.LINE_CHANNEL_SECRET).update(body).digest('base64');
   return h === signature;
 }
 
 async function replyChunked(replyToken: string, accessToken: string, text: string) {
-  // LINE จำกัดความยาวข้อความต่อชิ้น ~1000 ตัวอักษร → ตัดเป็นก้อน ๆ
   const chunks: string[] = [];
   for (let i = 0; i < text.length; i += 900) chunks.push(text.slice(i, i + 900));
-
   await fetch('https://api.line.me/v2/bot/message/reply', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
@@ -39,25 +37,27 @@ export async function POST(req: Request) {
   const body = JSON.parse(raw);
   const botUid: string = body?.destination || '';
 
-  // ใช้เฉพาะช่องของ WaibonOS เป็นหน้าบ้าน
+  // อ่านช่องจาก DB (ไม่ล็อกเฉพาะ WaibonOS)
   const { data: chan } = await supabaseServer
     .from('line_channels')
     .select('agent_name, access_token, is_enabled')
     .eq('destination', botUid)
     .maybeSingle();
 
-  if (!chan || chan.agent_name !== 'WaibonOS' || !chan.is_enabled) {
-    return NextResponse.json({ ok:true, skipped:'not-waibon' });
+  if (!chan || !chan.is_enabled) {
+    return NextResponse.json({ ok:true, skipped:'channel-not-enabled' });
   }
-  const token = chan.access_token as string;
+  const token = String(chan.access_token || '');
 
   const events = body.events || [];
   await ensureHiveSubscriptions();
 
   for (const ev of events) {
     if (ev.type !== 'message' || ev.message?.type !== 'text') continue;
+
     const text: string = String(ev.message.text || '').trim();
     const replyToken: string = ev.replyToken;
+    const userUid: string = ev?.source?.userId || 'unknown';
 
     if (!text) {
       await replyChunked(replyToken, token, '…');
@@ -65,7 +65,8 @@ export async function POST(req: Request) {
     }
 
     try {
-      const summary = await orchestrateHive(text);
+      // ส่ง userUid เข้าไปเพื่อให้ agent_logs ถูกต้อง
+      const summary = await orchestrateHive(text, userUid);
       await replyChunked(replyToken, token, summary);
     } catch (e: any) {
       await replyChunked(replyToken, token, `ขออภัย ระบบ hive มีปัญหา: ${e?.message || e}`);
