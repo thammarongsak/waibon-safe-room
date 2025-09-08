@@ -1,72 +1,109 @@
 // src/lib/hive.ts
 import { supabaseServer } from './supabaseServer';
 
-export async function upsertHiveAgents() {
-  const agents = [
-    {
-      name: 'WaibonOS',
-      capabilities: { speak: true, listen: true, orchestrator: true },
-      persona: { role: 'leader', style: 'calm' },
-    },
-    {
-      name: 'WaibeAI',
-      capabilities: { speak: true, listen: true, router: true },
-      persona: { role: 'coordinator', style: 'direct' },
-    },
-    {
-      name: 'ZetaAI',
-      capabilities: { speak: true, listen: true, planner: true },
-      persona: { role: 'strategist', style: 'analytical' },
-    },
-  ];
+type Agent = { id: string; name: 'WaibonOS'|'WaibeAI'|'ZetaAI'; persona: any; model: string };
 
-  for (const a of agents) {
-    const { error } = await supabaseServer
-      .from('hive_agents')
-      .upsert({ name: a.name, capabilities: a.capabilities, persona: a.persona });
-    if (error) throw error;
-  }
-
-  // subscribe ทุกตัวเข้าห้องกลาง hive.chat
-  for (const a of agents) {
-    const { error } = await supabaseServer
-      .from('hive_subscriptions')
-      .upsert({ agent_name: a.name, topic: 'hive.chat' });
-    if (error) throw error;
-  }
+async function getAgentByName(name: string): Promise<Agent> {
+  const { data, error } = await supabaseServer
+    .from('ai_agents')
+    .select('id,name,model,persona')
+    .eq('name', name)
+    .single();
+  if (error || !data) throw new Error(`agent not found: ${name}`);
+  return { id: data.id, name: data.name, persona: data.persona || {}, model: data.model };
 }
 
-export async function publishHiveKickoff() {
-  const chain = [
-    { topic: 'hive.chat', from_agent: 'WaibonOS', to_agent: 'WaibeAI', msg: 'เริ่มประชุม Hive' },
-    { topic: 'hive.chat', from_agent: 'WaibeAI',  to_agent: 'ZetaAI',  msg: 'รับทราบ' },
-    { topic: 'hive.chat', from_agent: 'ZetaAI',   to_agent: 'WaibonOS', msg: 'พร้อมทำงาน' },
-  ];
+function buildHiveSystem(role: string) {
+  return [
+    `[ROLE] คุณคือ ${role}. ทำงานร่วมทีมแบบ hive [/ROLE]`,
+    `[TASK] เข้าใจเจตนาข้อความล่าสุดของพ่อ แล้ววางแผน/ลงมือกับส่วนของคุณ [/TASK]`,
+    `[THOUGHT] สั้น กระชับ เป็นขั้นตอน [/THOUGHT]`,
+    `[OUTPUT] คำตอบ/ผลลัพธ์ที่ใช้ได้จริง [/OUTPUT]`,
+    `[NEXT]{WaibonOS|WaibeAI|ZetaAI|done}[/NEXT]`,
+  ].join('\n');
+}
 
-  for (const e of chain) {
-    const { error } = await supabaseServer.from('hive_events').insert({
-      topic: e.topic,
-      from_agent: e.from_agent,
-      to_agent: e.to_agent,
-      payload: { msg: e.msg },
+function pickNextTag(text: string): 'WaibonOS'|'WaibeAI'|'ZetaAI'|'done' {
+  const m = text.match(/\[NEXT\]\s*(WaibonOS|WaibeAI|ZetaAI|done)\s*\[\/NEXT\]/i);
+  return (m?.[1] as any) || 'done';
+}
+
+// ——— แกนเรียก LLM (ใช้ OPENAI_API_KEY ที่มีอยู่แล้วใน Render)
+async function llmGenerate(modelKey: string, system: string, user: string): Promise<string> {
+  const k = process.env.OPENAI_API_KEY || '';
+  if (!k) return `${system}\n[OUTPUT] (dev) ไม่มี OPENAI_API_KEY จึงตอบแบบ mock [/OUTPUT]\n[NEXT]done[/NEXT]`;
+  const r = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${k}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gpt-4o', // พ่อใช้ gpt-4o อยู่แล้ว
+      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+      temperature: 0.3,
+    }),
+  });
+  const j = await r.json();
+  return j.choices?.[0]?.message?.content ?? '[OUTPUT]…[/OUTPUT]\n[NEXT]done[/NEXT]';
+}
+
+export async function ensureHiveSubscriptions() {
+  const rows = [
+    { agent_name: 'WaibonOS', topic: 'hive.chat' },
+    { agent_name: 'WaibeAI',  topic: 'hive.chat' },
+    { agent_name: 'ZetaAI',   topic: 'hive.chat' },
+  ];
+  const { error } = await supabaseServer.from('hive_subscriptions').upsert(rows);
+  if (error) throw error;
+}
+
+export async function orchestrateHive(userText: string) {
+  // โหลด 3 เอเจนต์
+  const [waibon, waibe, zeta] = await Promise.all([
+    getAgentByName('WaibonOS'),
+    getAgentByName('WaibeAI'),
+    getAgentByName('ZetaAI'),
+  ]);
+  const map = { WaibonOS: waibon, WaibeAI: waibe, ZetaAI: zeta } as const;
+
+  // ประวัติย่อ (ล่าสุด 8 เหตุการณ์ใน hive.chat)
+  const { data: hist } = await supabaseServer
+    .from('hive_events')
+    .select('from_agent,to_agent,payload,ts')
+    .eq('topic', 'hive.chat')
+    .order('ts', { ascending: false })
+    .limit(8);
+  const historyText = (hist||[]).reverse().map(x => `${x.from_agent}→${x.to_agent}: ${JSON.stringify(x.payload)}`).join('\n');
+
+  // วิ่ง round-robin สูงสุด 5 เทิร์น (กันลูป)
+  let turns = 0;
+  let current: 'WaibonOS'|'WaibeAI'|'ZetaAI' = 'WaibonOS';
+  const transcript: string[] = [];
+
+  while (turns < 5) {
+    const a = map[current];
+    const system = buildHiveSystem(a.name);
+    const user = `ข้อความจากพ่อ: """${userText}""" \n\nประวัติการสนทนาใน hive:\n${historyText}`;
+    const reply = await llmGenerate(a.model, system, user);
+    transcript.push(`${a.name}: ${reply}`);
+
+    // บันทึกลง hive_events
+    await supabaseServer.from('hive_events').insert({
+      topic: 'hive.chat',
+      from_agent: a.name,
+      to_agent: 'ALL',
+      payload: { text: reply },
     });
-    if (error) throw error;
-  }
-}
 
-export async function hiveStatus() {
-  const [{ data: agents, error: e1 }, { data: subs, error: e2 }, { data: last10, error: e3 }] =
-    await Promise.all([
-      supabaseServer.from('hive_agents').select('*').order('name', { ascending: true }),
-      supabaseServer.from('hive_subscriptions').select('*').order('agent_name', { ascending: true }),
-      supabaseServer
-        .from('hive_events')
-        .select('topic,from_agent,to_agent,payload,ts')
-        .order('ts', { ascending: false })
-        .limit(10),
-    ]);
-  if (e1) throw e1;
-  if (e2) throw e2;
-  if (e3) throw e3;
-  return { agents, subs, last10 };
+    const next = pickNextTag(reply);
+    if (next === 'done') break;
+    current = next;
+    turns++;
+  }
+
+  // สรุปให้ WaibonOS ส่งกลับห้อง
+  const summary = [
+    'สรุปเวที Hive:',
+    ...transcript.map(s => `• ${s.split('\n')[0]}`),
+    '— จบรอบ —',
+  ].join('\n');
+  return summary;
 }
