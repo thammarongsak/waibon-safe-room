@@ -2,32 +2,40 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-// ใช้ think แทน callAgent (ตามโปรเจกต์พ่อ)
+// ใช้ think + loadAgent ตามโปรเจกต์พ่อ
 import { think } from "@/lib/agents/brain";
-import { getAgentByName } from "@/lib/agents/load";
+import { loadAgent } from "@/lib/agents/load";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_KEY!
 );
 
-type AgentKey = "WaibonOS" | "WaibeAI" | "ZetaAI";
+// ใช้ owner_id จาก ENV (พ่อมีอยู่แล้วใน Render: WAIBON_OWNER_ID)
+const OWNER_ID = process.env.WAIBON_OWNER_ID!;
+type AgentKey = "Waibon" | "Waibe" | "Zeta";
 
+// รองรับแท็ก NEXT ได้ทั้งชื่อสั้น (Waibon/Waibe/Zeta) และชื่อยาว (WaibonOS/WaibeAI/ZetaAI)
 function pickNextTag(text: string): AgentKey | "done" {
-  const m = text.match(/\[NEXT\]\s*(WaibonOS|WaibeAI|ZetaAI|done)\s*\[\/NEXT\]/i);
-  return (m?.[1] as any) || "done";
+  const m = text.match(/\[NEXT\]\s*(Waibon(?:OS)?|Waibe(?:AI)?|Zeta(?:AI)?|done)\s*\[\/NEXT\]/i);
+  if (!m) return "done";
+  const v = m[1].toLowerCase();
+  if (v.startsWith("waibon")) return "Waibon";
+  if (v.startsWith("waibe"))  return "Waibe";
+  if (v.startsWith("zeta"))   return "Zeta";
+  return "done";
 }
 
 function buildHivePrompt(agentName: string, persona: any, contextLines: string[]) {
   const protocol = persona?.hive_protocol || {};
   const fmt =
     protocol.format ||
-    "[ROLE]…[/ROLE]\n[TASK]…[/TASK]\n[THOUGHT]…[/THOUGHT]\n[OUTPUT]…[/OUTPUT]\n[NEXT]{WaibonOS|WaibeAI|ZetaAI|done}[/NEXT]";
+    "[ROLE]…[/ROLE]\n[TASK]…[/TASK]\n[THOUGHT]…[/THOUGHT]\n[OUTPUT]…[/OUTPUT]\n[NEXT]{Waibon|Waibe|Zeta|done}[/NEXT]";
 
   const rules = (protocol.rules || [
     "สั้น กระชับ ตรงประเด็น",
     "อ้างอิงสิ่งที่เอเยนต์ก่อนหน้าพูดแบบมีเหตุผล",
-    "จบด้วย [NEXT]{WaibonOS|WaibeAI|ZetaAI|done}[/NEXT]"
+    "จบด้วย [NEXT]{Waibon|Waibe|Zeta|done}[/NEXT]"
   ]).join("\n- ");
 
   const history = contextLines.slice(-8).join("\n");
@@ -85,11 +93,11 @@ export async function POST(req: NextRequest) {
 
     const sessionId = await ensureSession(groupId, title);
 
-    // โหลด agent ทั้งสามจากชื่อที่พ่อใช้ใน DB
-    const waibon = await getAgentByName(["WaibonOS", "Waibon"]);
-    const waibe  = await getAgentByName(["WaibeAI", "Waibe"]);
-    const zeta   = await getAgentByName(["ZetaAI", "Zeta"]);
-    const agents: Record<AgentKey, any> = { WaibonOS: waibon, WaibeAI: waibe, ZetaAI: zeta };
+    // โหลด agent ทั้งสามจาก OWNER_ID + ชื่อสั้น (ที่โปรเจกต์พ่อใช้อยู่)
+    const waibon = await loadAgent(OWNER_ID, "Waibon");
+    const waibe  = await loadAgent(OWNER_ID, "Waibe");
+    const zeta   = await loadAgent(OWNER_ID, "Zeta");
+    const agents: Record<AgentKey, any> = { Waibon: waibon, Waibe: waibe, Zeta: zeta };
 
     // ดึงบริบทเดิม
     const { data: turns } = await supabase
@@ -101,19 +109,19 @@ export async function POST(req: NextRequest) {
     const contextLines = (turns || []).map(t => `[${t.turn_no}] ${t.agent_name}: ${t.output}`);
 
     // หมุนคิว
-    let current: AgentKey = "WaibonOS";
+    let current: AgentKey = "Waibon";
     let turn = (turns?.[turns.length - 1]?.turn_no || 0) + 1;
     const endAt = turn + Math.max(1, Math.min(10, rounds)) - 1;
 
     while (turn <= endAt) {
       const a = agents[current];
 
-      // ใช้ think() ของโปรเจกต์พ่อ โดยส่งข้อความรวม (prompt string)
+      // ใช้ think() ของโปรเจกต์พ่อ โดยส่ง prompt string เดียว
       const prompt = buildHivePrompt(a.name, a.persona, contextLines);
       const out: any = await think({
         text: prompt,
         agent: a,
-        userId: null,           // ไม่ผูก user เฉพาะตอนรันวงกลุ่ม
+        userId: null,   // ไม่ผูก user เฉพาะตอนรันวงในกลุ่ม
         fatherId: null,
       });
 
