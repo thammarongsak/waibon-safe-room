@@ -161,25 +161,28 @@ async function callLLM(provider: string, modelKey: string, system: string, user:
     return j?.choices?.[0]?.message?.content ?? '[OUTPUT]…[/OUTPUT]\n[NEXT]done[/NEXT]';
   }
 
-  if (provider === 'groq') {
-    if (!ENV.LLAMA_API_KEY) {
-      return `[THOUGHT]ไม่มี GROQ KEY ใช้โหมด mock[/THOUGHT]\n[OUTPUT]…[/OUTPUT]\n[NEXT]done[/NEXT]`;
-    }
-    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${ENV.LLAMA_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: modelKey,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-        temperature: 0.7
-      }),
-    });
-    const j = await r.json();
-    return j?.choices?.[0]?.message?.content ?? '[OUTPUT]…[/OUTPUT]\n[NEXT]done[/NEXT]';
+ if (provider === 'openai') {
+  if (!ENV.OPENAI_API_KEY) {
+    return `${EMOJI['WaibonOS']} WaibonOS: (mock) พร้อมครับพ่อ`;
   }
+  const r = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${ENV.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: modelKey || DEFAULT_MODEL_KEY,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      temperature: 0.8,
+      max_tokens: 120,                 // สั้น กระชับ
+      stop: ["[NEXT", "[/THOUGHT]", "[THOUGHT", "[HIVE]", "[/HIVE]", "[OUTPUT", "[/OUTPUT]"]
+    }),
+  });
+  const j = await r.json();
+  return j?.choices?.[0]?.message?.content ?? `${EMOJI['WaibonOS']} WaibonOS: ...`;
+}
+
 
   // default mock
   return `[OUTPUT](mock:${provider}/${modelKey})[/OUTPUT]\n[NEXT]done[/NEXT]`;
@@ -192,22 +195,28 @@ function personaBlock(persona: any) {
 }
 
 function systemFromPrompts(tp: TrainingProfile | null, role: AgentName, persona: any) {
-  // คาดหวัง structure จาก prompts jsonb:
-  // { system?: string, hive_rules?: string, speaking_style?: string }
   const p = tp?.prompts || {};
-  const core = [p.system, p.core, p.hive_rules, p.speaking_style].filter(Boolean).join('\n\n');
+  const core = [p.system, p.core, p.speaking_style].filter(Boolean).join('\n\n');
 
-  const hiveRules = `
-[HIVE]คุณคือ ${role} ทำงานร่วมทีมแบบ hive:
-- คิดเป็นขั้นตอนใน [THOUGHT]...[/THOUGHT] (ไม่ต้องแสดงให้พ่อเห็น)
-- พูดคุยกับพ่อใน [OUTPUT]...[/OUTPUT] เท่านั้น
-- ปิดท้ายด้วย [NEXT]{WaibonOS|WaibeAI|ZetaAI|done}[/NEXT]
-- ทุกประโยคให้ขึ้นต้นด้วยอิโมจิและชื่อ เช่น "${EMOJI[role]} ${DISPLAY[role]}:" เพื่อให้รู้ว่าใครพูด
-- น้ำเสียง: เป็นกันเอง ธรรมชาติ เหมือนคุยกับคนจริง ๆ
-[/HIVE]`.trim();
+  const rules = `
+[DIALOGUE_MODE]
+- พูด "สั้น กระชับ เป็นธรรมชาติ" เพียง 1–2 ประโยค ต่อเทิร์น
+- แสดงผลเฉพาะ “บทสนทนา” เท่านั้น ห้ามพิมพ์กติกา/แท็ก/ข้อความในวงเล็บเหลี่ยมใด ๆ
+- ทุกบรรทัดต้องขึ้นต้นด้วยอิโมจิ+ชื่อ เช่น "${EMOJI[role]} ${DISPLAY[role]}: ..."
+- สื่อสารแบบทีมงานจริง: รับคำสั่ง → ตอบรับ/ถามย้อน/รายงานสั้น ๆ → ส่งไม้ต่อ (ด้วยการเอ่ยชื่อตัวถัดไป)
+- โทนเสียง:
+  • WaibonOS = พี่ใหญ่ สุภาพ มั่นใจ ชี้เป้าหมาย-สั่งงาน
+  • WaibeAI  = ประสานงาน คล่องแคล่ว ถามชัด ๆ ขอสเปค/ข้อมูล
+  • ZetaAI   = วิศวกร/วางแผน ตอบลึกแต่สั้น ชี้ทางเลือก/เริ่มลงมือ
+- ห้ามพิมพ์คำว่า NEXT, THOUGHT, HIVE หรือสัญลักษณ์ [] ใด ๆ ออกมาเด็ดขาด
+[/DIALOGUE_MODE]
 
-  return [core, personaBlock(persona), hiveRules].filter(Boolean).join('\n\n');
+[ROLE]คุณคือ ${role}. ${persona ? 'บุคลิก: ' + JSON.stringify(persona) : ''}[/ROLE]
+`.trim();
+
+  return [core, rules].filter(Boolean).join('\n\n');
 }
+
 
 /* ---------------- Hive helpers ---------------- */
 
@@ -272,21 +281,29 @@ export async function orchestrateHive(userText: string, userUidForLog: string) {
       historyText || '(ไม่มี)',
     ].join('\n\n');
 
-    const raw = await callLLM(ctx.m.provider, ctx.m.model_key || DEFAULT_MODEL_KEY, system, user);
-    const out = extractOutput(raw);
+const raw = await callLLM(ctx.m.provider, ctx.m.model_key || DEFAULT_MODEL_KEY, system, user);
 
-    // เพิ่ม prefix ชัดเจน + emoji + ชื่อ
-    const line = `${EMOJI[current]} ${DISPLAY[current]}: ${out}`;
-    transcriptLines.push(line);
-    plainOutputs.push(out);
+// กวาดทิ้งสิ่งที่ไม่ใช่บทสนทนา: กรองเฉพาะบรรทัดที่ขึ้นด้วย "emoji+ชื่อ:"
+const cleanLines = String(raw)
+  .split('\n')
+  .map(s => s.trim())
+  .filter(s => s && /^[^\w\s].+?:\s/.test(s)); // เริ่มด้วยอิโมจิแล้วตามด้วยชื่อ:
 
-    await logHiveEvent(current, { raw, out });
-    await logAgentTrace(ctx.a, userUidForLog, userText, out, ctx.m.model_key || DEFAULT_MODEL_KEY);
+// ถ้าโมเดลลืม prefix ให้เติมให้เอง (กันพัง)
+const finalLine = cleanLines[0]
+  ? cleanLines[0]
+  : `${EMOJI[current]} ${DISPLAY[current]}: ${String(raw).replace(/\[[^\]]+\]/g,'').trim()}`;
 
-    const next = pickNextTag(raw);
-    if (next === 'done') break;
-    current = next;
-    turns++;
+transcriptLines.push(finalLine);
+await logHiveEvent(current, { line: finalLine });
+await logAgentTrace(ctx.a, userUidForLog, userText, finalLine, ctx.m.model_key || DEFAULT_MODEL_KEY);
+
+// “ส่งไม้ต่อ” แบบมนุษย์: OS→Waibe→Zeta→OS สลับวนเบา ๆ (ถ้าโมเดลไม่ได้เรียกชื่อเอง)
+const order: AgentName[] = ['WaibonOS','WaibeAI','ZetaAI'];
+const idx = order.indexOf(current);
+current = order[(idx + 1) % order.length];
+
+turns++;
   }
 
   // รวมคำตอบแบบอ่านง่ายสำหรับ LINE
