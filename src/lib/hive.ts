@@ -298,6 +298,10 @@ transcriptLines.push(finalLine);
 await logHiveEvent(current, { line: finalLine });
 await logAgentTrace(ctx.a, userUidForLog, userText, finalLine, ctx.m.model_key || DEFAULT_MODEL_KEY);
 
+await supabaseServer.from('hive_transcripts').insert({
+  session_id: null, order_no: transcriptLines.length, agent_name: current, text: finalLine
+});
+    
 // “ส่งไม้ต่อ” แบบมนุษย์: OS→Waibe→Zeta→OS สลับวนเบา ๆ (ถ้าโมเดลไม่ได้เรียกชื่อเอง)
 const order: AgentName[] = ['WaibonOS','WaibeAI','ZetaAI'];
 const idx = order.indexOf(current);
