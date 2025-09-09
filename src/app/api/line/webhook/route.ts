@@ -14,15 +14,13 @@ function verifySignature(body: string, signature: string | null) {
   return h === signature;
 }
 
-async function replyChunked(replyToken: string, accessToken: string, text: string) {
-  const chunks: string[] = [];
-  for (let i = 0; i < text.length; i += 900) chunks.push(text.slice(i, i + 900));
+async function replyLINE(replyToken: string, accessToken: string, text: string) {
   await fetch('https://api.line.me/v2/bot/message/reply', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
     body: JSON.stringify({
       replyToken,
-      messages: chunks.map(t => ({ type: 'text', text: t })),
+      messages: [{ type: 'text', text }],
     }),
   });
 }
@@ -37,7 +35,7 @@ export async function POST(req: Request) {
   const body = JSON.parse(raw);
   const botUid: string = body?.destination || '';
 
-  // อ่านช่องจาก DB (ไม่ล็อกเฉพาะ WaibonOS)
+  // อ่านช่องจาก DB
   const { data: chan } = await supabaseServer
     .from('line_channels')
     .select('agent_name, access_token, is_enabled')
@@ -47,9 +45,9 @@ export async function POST(req: Request) {
   if (!chan || !chan.is_enabled) {
     return NextResponse.json({ ok:true, skipped:'channel-not-enabled' });
   }
-  const token = String(chan.access_token || '');
-
+  const accessToken = String(chan.access_token || '');
   const events = body.events || [];
+
   await ensureHiveSubscriptions();
 
   for (const ev of events) {
@@ -60,18 +58,38 @@ export async function POST(req: Request) {
     const userUid: string = ev?.source?.userId || 'unknown';
 
     if (!text) {
-      await replyChunked(replyToken, token, '…');
+      await replyLINE(replyToken, accessToken, '…');
       continue;
     }
 
     try {
-      // ส่ง userUid เข้าไปเพื่อให้ agent_logs ถูกต้อง
-      const summary = await orchestrateHive(text, userUid);
-      await replyChunked(replyToken, token, summary);
+      // orchestrate ให้ทีมคิดก่อน ได้เป็น "บรรทัด" ทีละเอเจนต์
+      const scripted = await orchestrateHive(text, userUid);
+      // แยกเป็นบรรทัด (ข้าม header/ footer ถ้าไม่อยากส่ง)
+      const lines = scripted.split('\n').filter(Boolean);
+
+      // ตอบทันทีบรรทัดแรกด้วย reply API (เร็วไว้ก่อน)
+      await replyLINE(replyToken, accessToken, lines[0]);
+
+      // ที่เหลือให้ route push-seq ส่งต่อแบบมีดีเลย์ (ไม่บล็อกการตอบ)
+      const rest = lines.slice(1);
+      if (rest.length > 0) {
+        await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || ''}/api/line/push-seq`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            accessToken,
+            to: userUid,
+            lines: rest,
+            delayMs: 900,     // ปรับได้ 600–1200 เพื่อความเป็นธรรมชาติ
+          }),
+        }).catch(() => {});
+      }
     } catch (e: any) {
-      await replyChunked(replyToken, token, `ขออภัย ระบบ hive มีปัญหา: ${e?.message || e}`);
+      await replyLINE(replyToken, accessToken, `ขออภัย ระบบ hive มีปัญหา: ${e?.message || e}`);
     }
   }
 
+  // ตอบกลับ LINE ให้จบ request
   return NextResponse.json({ ok: true });
 }
