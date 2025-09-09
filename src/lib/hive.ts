@@ -2,14 +2,17 @@
 import { supabaseServer } from './supabaseServer';
 import { ENV } from './env';
 
+/* =========================
+   Types
+========================= */
 export type AgentName = 'WaibonOS' | 'WaibeAI' | 'ZetaAI';
 
 type DBAgent = {
   id: string;
-  owner_id: string;               // เพิ่มมาเพื่อ log ให้ถูก schema
+  owner_id: string;
   name: AgentName;
-  model: string | null;           // ai_models.id
-  training_profile_id: string | null;
+  model: string | null;                // ai_models.id
+  training_profile_id: string | null;  // training_profiles.id
   persona: any | null;
 };
 
@@ -18,7 +21,9 @@ type TrainingProfile = { id: string; prompts: any | null };
 
 const DEFAULT_MODEL_KEY = 'gpt-4o';
 
-// บุคลิก + emoji + คำอธิบายบทบาท
+/* =========================
+   Display / Persona / Style
+========================= */
 const EMOJI: Record<AgentName, string> = {
   WaibonOS: '🤖',
   WaibeAI:  '👧',
@@ -43,49 +48,28 @@ const DEFAULT_PERSONA: Record<AgentName, any> = {
   ZetaAI:   { role: 'Strategist', style: 'analytical', tone: 'วิเคราะห์ลึก วางแผนหลายก้าว' },
 };
 
-/* ---------------- Utilities ---------------- */
-
-function extractOutput(text: string): string {
-  const m = text?.match(/\[OUTPUT\]([\s\S]*?)\[\/OUTPUT\]/i);
-  return (m ? m[1] : text || '').trim();
+/* =========================
+   Utilities
+========================= */
+function stripTags(s: string) {
+  return String(s || '').replace(/\[[^\]]*]/g, '').trim();
 }
 
-function pickNextTag(text: string): AgentName | 'done' {
-  const m = text?.match(/\[NEXT\]\s*(WaibonOS|WaibeAI|ZetaAI|done)\s*\[\/NEXT\]/i);
-  return (m?.[1] as any) || 'done';
+function ensurePrefixAndPronoun(agent: AgentName, text: string) {
+  let s = stripTags(text);
+  // เติมคำลงท้าย (ครับ/ค่ะ) หากขาด
+  const pron = PRONOUN[agent];
+  const hasPron = new RegExp(`\\b${pron}[.!?…]*$`).test(s);
+  if (!hasPron && s.length) s = `${s} ${pron}`;
+  // เติม prefix emoji+ชื่อ ถ้าขาด
+  const prefix = `${EMOJI[agent]} ${DISPLAY[agent]}:`;
+  if (!s.startsWith(prefix)) s = `${prefix} ${s}`;
+  return s;
 }
 
-async function logHiveEvent(from: AgentName, payload: any) {
-  try {
-    await supabaseServer.from('hive_events').insert({
-      topic: 'hive.chat',
-      from_agent: from,
-      to_agent: 'ALL',
-      payload
-    });
-  } catch { /* noop */ }
-}
-
-async function logAgentTrace(agent: DBAgent, userUid: string, input: string, output: string, model: string) {
-  try {
-    await supabaseServer.from('agent_logs').insert({
-      owner_id: agent.owner_id,
-      agent_id: agent.id,
-      agent_name: agent.name,
-      channel: 'line',
-      user_uid: userUid,
-      input_text: input,
-      output_text: output,
-      model,
-      ok: true,
-    });
-  } catch (e) {
-    console.error('logAgentTrace failed:', e);
-  }
-}
-
-/* ---------------- DB loaders ---------------- */
-
+/* =========================
+   DB Loaders
+========================= */
 export async function loadAiAgent(name: AgentName): Promise<DBAgent> {
   const { data, error } = await supabaseServer
     .from('ai_agents')
@@ -95,12 +79,14 @@ export async function loadAiAgent(name: AgentName): Promise<DBAgent> {
   if (error) throw error;
 
   if (!data) {
-    // fallback: hive_agents.persona ถ้ามี
     const hive = await supabaseServer
-      .from('hive_agents').select('name,persona').eq('name', name).maybeSingle();
+      .from('hive_agents')
+      .select('name, persona')
+      .eq('name', name)
+      .maybeSingle();
     return {
       id: name,
-      owner_id: name, // fallback เท่าที่มี
+      owner_id: name,
       name,
       model: null,
       training_profile_id: null,
@@ -131,25 +117,57 @@ async function loadModel(modelId: string | null): Promise<DBModel> {
 
 async function loadTrainingProfile(tpId: string | null): Promise<TrainingProfile | null> {
   if (!tpId) return null;
-
-  // ตารางจริงของเรา: training_profiles(prompts jsonb)
-  const q = await supabaseServer
+  const { data, error } = await supabaseServer
     .from('training_profiles')
     .select('id,prompts')
     .eq('id', tpId)
     .maybeSingle();
-
-  if (q.error) throw q.error;
-  if (!q.data) return null;
-  return q.data as TrainingProfile;
+  if (error) throw error;
+  if (!data) return null;
+  return data as TrainingProfile;
 }
 
-/* ---------------- LLM call per provider ---------------- */
+/* =========================
+   Logging
+========================= */
+async function logHiveEvent(from: AgentName, payload: any) {
+  try {
+    await supabaseServer.from('hive_events').insert({
+      topic: 'hive.chat',
+      from_agent: from,
+      to_agent: 'ALL',
+      payload,
+    });
+  } catch (e) {
+    // no-op
+  }
+}
 
+async function logAgentTrace(agent: DBAgent, userUid: string, input: string, output: string, model: string) {
+  try {
+    await supabaseServer.from('agent_logs').insert({
+      owner_id: agent.owner_id,
+      agent_id: agent.id,
+      agent_name: agent.name,
+      channel: 'line',
+      user_uid: userUid,
+      input_text: input,
+      output_text: output,
+      model,
+      ok: true,
+    });
+  } catch (e) {
+    // keep silent
+  }
+}
+
+/* =========================
+   LLM Callers
+========================= */
 async function callLLM(provider: string, modelKey: string, system: string, user: string): Promise<string> {
   if (provider === 'openai') {
     if (!ENV.OPENAI_API_KEY) {
-      return `[THOUGHT]ไม่มี OPENAI_API_KEY ใช้โหมด mock[/THOUGHT]\n[OUTPUT]…[/OUTPUT]\n[NEXT]done[/NEXT]`;
+      return `${EMOJI['WaibonOS']} WaibonOS: (mock) พร้อมช่วยพ่อเลยครับ`;
     }
     const r = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -160,61 +178,59 @@ async function callLLM(provider: string, modelKey: string, system: string, user:
           { role: 'system', content: system },
           { role: 'user', content: user },
         ],
-        temperature: 0.7
+        temperature: 0.8,
+        max_tokens: 120,
+        stop: ['[', ']', 'THOUGHT', 'HIVE', 'OUTPUT', 'NEXT'], // กันแท็ก
       }),
     });
     const j = await r.json();
-    return j?.choices?.[0]?.message?.content ?? '[OUTPUT]…[/OUTPUT]\n[NEXT]done[/NEXT]';
+    return j?.choices?.[0]?.message?.content ?? `${EMOJI['WaibonOS']} WaibonOS: ...ครับ`;
   }
 
-if (provider === 'openai') {
-  if (!ENV.OPENAI_API_KEY) {
-    return `${EMOJI['WaibonOS']} WaibonOS: (mock) พร้อมช่วยพ่อเลยครับ`;
+  if (provider === 'groq') {
+    if (!ENV.LLAMA_API_KEY) {
+      return `${EMOJI['WaibonOS']} WaibonOS: (mock-groq) พร้อมครับพ่อ`;
+    }
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ENV.LLAMA_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: modelKey,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        temperature: 0.8,
+        max_tokens: 120,
+        stop: ['[', ']', 'THOUGHT', 'HIVE', 'OUTPUT', 'NEXT'],
+      }),
+    });
+    const j = await r.json();
+    return j?.choices?.[0]?.message?.content ?? `${EMOJI['WaibonOS']} WaibonOS: ...ครับ`;
   }
-  const r = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${ENV.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: modelKey || DEFAULT_MODEL_KEY,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      temperature: 0.8,
-      max_tokens: 120,
-      stop: ["[", "]", "THOUGHT", "HIVE", "OUTPUT", "NEXT"] // กันแท็กโผล่
-    }),
-  });
-  const j = await r.json();
-  return j?.choices?.[0]?.message?.content ?? `${EMOJI['WaibonOS']} WaibonOS: ...ครับ`;
-}
-
 
   // default mock
-  return `[OUTPUT](mock:${provider}/${modelKey})[/OUTPUT]\n[NEXT]done[/NEXT]`;
+  return `${EMOJI['WaibonOS']} WaibonOS: (mock:${provider}/${modelKey}) ครับ`;
 }
 
-/* ---------------- Prompts ---------------- */
-
-function personaBlock(persona: any) {
-  return persona ? `[PERSONA]${JSON.stringify(persona)}[/PERSONA]` : '';
-}
-
+/* =========================
+   Prompt Builder
+========================= */
 function systemFromPrompts(tp: TrainingProfile | null, role: AgentName, persona: any) {
   const p = tp?.prompts || {};
   const core = [p.system, p.core, p.speaking_style].filter(Boolean).join('\n\n');
 
   const rules = `
 [DIALOGUE_MODE]
-- สนทนาเป็นธรรมชาติ ไม่ใช้แท็กหรือเครื่องหมายพิเศษใดๆ (ห้ามพิมพ์ THOUGHT/NEXT/OUTPUT/HIVE).
-- ตอบสั้น กระชับ 1–2 ประโยค ต่อเทิร์น เหมือนคุยในแชทจริง
+- สนทนาเป็นธรรมชาติ ไม่มีแท็ก/วงเล็บพิเศษ (ห้ามพิมพ์ THOUGHT/NEXT/OUTPUT/HIVE).
+- ตอบสั้น 1–2 ประโยค ต่อเทิร์น เหมือนคุยในแชท
 - ทุกบรรทัดขึ้นต้นด้วย "อิโมจิ+ชื่อ" เช่น "${EMOJI[role]} ${DISPLAY[role]}: ..."
 - ใช้สรรพนามให้ถูกตัว: WaibonOS/ ZetaAI ลงท้าย "ครับ", WaibeAI ลงท้าย "ค่ะ"
 - พฤติกรรมทีม:
   • WaibonOS = พี่ใหญ่: รับคำสั่ง, ตั้งเป้าหมาย, สั่งงาน/ชวนคุย, สรุปเป็นระยะ
   • WaibeAI  = ประสานงาน: ขอข้อมูลสเปค/ตัวอย่าง, แตกงาน, รายงานสั้น
   • ZetaAI   = วิศวกร/วางแผน: เสนอแนวทาง/ความเสี่ยง, เริ่มร่าง/ตัวอย่างให้เห็นภาพ
-- ไม่ต้องจบรอบ ไม่ต้องบอกว่าจบ ให้คุยต่อได้อิสระตามบริบท
+- ไม่ต้องประกาศว่าจบรอบ ให้คุยอิสระตามบริบท
 [/DIALOGUE_MODE]
 
 [ROLE]คุณคือ ${role}${persona ? ' — บุคลิก: ' + JSON.stringify(persona) : ''}[/ROLE]
@@ -223,9 +239,9 @@ function systemFromPrompts(tp: TrainingProfile | null, role: AgentName, persona:
   return [core, rules].filter(Boolean).join('\n\n');
 }
 
-
-/* ---------------- Hive helpers ---------------- */
-
+/* =========================
+   Hive Subscriptions
+========================= */
 export async function ensureHiveSubscriptions() {
   const rows = [
     { agent_name: 'WaibonOS', topic: 'hive.chat' },
@@ -237,8 +253,9 @@ export async function ensureHiveSubscriptions() {
     .upsert(rows, { onConflict: 'agent_name,topic' });
 }
 
-/* ---------------- Orchestrator ---------------- */
-
+/* =========================
+   Orchestrator (Free-form)
+========================= */
 export async function orchestrateHive(userText: string, userUidForLog: string) {
   await ensureHiveSubscriptions();
 
@@ -262,7 +279,7 @@ export async function orchestrateHive(userText: string, userUidForLog: string) {
     ZetaAI:   { a: a3, m: m3, tp: tp3 },
   } as const;
 
-  // history ย่อ (ไว้เป็นบริบทให้คุยต่อเนื่อง)
+  // ประวัติย่อให้โมเดลเห็นบริบท
   const { data: hist } = await supabaseServer
     .from('hive_events')
     .select('from_agent,payload,ts')
@@ -270,20 +287,14 @@ export async function orchestrateHive(userText: string, userUidForLog: string) {
     .order('ts', { ascending: false })
     .limit(8);
 
-  const historyText = (hist || []).reverse()
-    .map(x => `${x.from_agent}: ${JSON.stringify(x.payload)}`).join('\n');
-
- let turns = 0;
+  let turns = 0;
   let current: AgentName = 'WaibonOS';
   const transcriptLines: string[] = [];
-
-  // จำกัดจำนวนบรรทัดต่อคำสั่งรอบเดียว (กัน spam) — ปรับได้ 6–12
-  const MAX_LINES = 9;
+  const MAX_LINES = 9; // ปรับได้ตามต้องการ
 
   while (turns < MAX_LINES) {
     const ctx = agents[current];
     const system = systemFromPrompts(ctx.tp, current, ctx.a.persona ?? DEFAULT_PERSONA[current]);
-
     const user = [
       `ข้อความจากพ่อ: """${userText}"""`,
       `Timeline ล่าสุด:`,
@@ -292,7 +303,7 @@ export async function orchestrateHive(userText: string, userUidForLog: string) {
 
     const raw = await callLLM(ctx.m.provider, ctx.m.model_key || DEFAULT_MODEL_KEY, system, user);
 
-    // เลือกเอาเฉพาะบรรทัดที่เป็นบทสนทนาจริง แล้วเติม prefix/คำลงท้ายหากขาด
+    // แยกเฉพาะบรรทัดแรก แล้วทำให้เป็นรูปแบบมาตรฐาน
     let line = String(raw || '').split('\n').map(s => s.trim()).find(Boolean) || '';
     line = ensurePrefixAndPronoun(current, line);
 
@@ -300,29 +311,27 @@ export async function orchestrateHive(userText: string, userUidForLog: string) {
     await logHiveEvent(current, { line });
     await logAgentTrace(ctx.a, userUidForLog, userText, line, ctx.m.model_key || DEFAULT_MODEL_KEY);
 
-    // หมุนลำดับพูดแบบคนจริง (พี่→น้อง→น้อง→พี่) — ไม่ฟิกแผน แต่วนอ่านง่าย
+    // หมุนลำดับพูดแบบคนจริง (พี่→น้อง→น้อง→พี่)
     const order: AgentName[] = ['WaibonOS', 'WaibeAI', 'ZetaAI'];
     current = order[(order.indexOf(current) + 1) % order.length];
     turns++;
   }
 
-  // คืนเป็นข้อความหลายบรรทัด ให้ webhook แยกส่งทีละบรรทัดพร้อมดีเลย์
+  // คืนเป็นข้อความหลายบรรทัด (webhook จะไปแตกส่งทีละบรรทัดพร้อมดีเลย์)
   return transcriptLines.join('\n');
-  }
-
-  // รวมคำตอบแบบอ่านง่ายสำหรับ LINE
-  const header = '🫂 สังคม AI กำลังช่วยกันคิดงานให้อยู่ครับพ่อ';
-  const footer = '— จบรอบ —';
-  return [header, ...transcriptLines, footer].join('\n');
 }
 
-/* ---------------- Status / Bootstrap ---------------- */
-
+/* =========================
+   Status / Bootstrap
+========================= */
 export async function hiveStatus() {
   const [agents, subs, events] = await Promise.all([
     supabaseServer.from('hive_agents').select('*').order('name', { ascending: true }),
     supabaseServer.from('hive_subscriptions').select('*').order('agent_name', { ascending: true }),
-    supabaseServer.from('hive_events').select('topic,from_agent,to_agent,payload,ts').order('ts', { ascending: false }).limit(10),
+    supabaseServer.from('hive_events')
+      .select('topic,from_agent,to_agent,payload,ts')
+      .order('ts', { ascending: false })
+      .limit(10),
   ]);
   if (agents.error) throw agents.error;
   if (subs.error) throw subs.error;
