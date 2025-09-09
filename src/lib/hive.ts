@@ -20,15 +20,21 @@ const DEFAULT_MODEL_KEY = 'gpt-4o';
 
 // บุคลิก + emoji + คำอธิบายบทบาท
 const EMOJI: Record<AgentName, string> = {
-  WaibonOS: '🦾',
-  WaibeAI:  '🧭',
-  ZetaAI:   '🧠',
+  WaibonOS: '🤖',
+  WaibeAI:  '👧',
+  ZetaAI:   '👦',
 };
 
 const DISPLAY: Record<AgentName, string> = {
   WaibonOS: 'WaibonOS',
   WaibeAI:  'WaibeAI',
   ZetaAI:   'ZetaAI',
+};
+
+const PRONOUN: Record<AgentName, string> = {
+  WaibonOS: 'ครับ',
+  WaibeAI:  'ค่ะ',
+  ZetaAI:   'ครับ',
 };
 
 const DEFAULT_PERSONA: Record<AgentName, any> = {
